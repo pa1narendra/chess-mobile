@@ -1,0 +1,32 @@
+name: real_chess_mobile
+description: A new Flutter project for Real Chess.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.3 <4.0.0'
+
+dependencies:
+  chess: ^0.7.0
+  flutter:
+    sdk: flutter
+  flutter_chess_board: ^1.0.1
+  google_fonts: ^6.3.0
+  http: ^1.6.0
+  intl: ^0.20.2
+  lucide_icons: ^0.257.0
+  provider: ^6.1.5+1
+  shared_preferences: ^2.5.3
+  web_socket_channel: ^3.0.3
+
+  # Dependencies will be added via command line to ensure valid versions
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/

@@ -1,0 +1,22 @@
+{
+    "name": "chess-backend",
+    "version": "1.0.0",
+    "scripts": {
+        "dev": "bun run --watch src/index.ts",
+        "start": "bun run src/index.ts"
+    },
+    "dependencies": {
+        "@elysiajs/cors": "^1.4.0",
+        "@sinclair/typebox": "^0.34.41",
+        "@types/jsonwebtoken": "^9.0.10",
+        "chess.js": "^1.0.0-beta.8",
+        "elysia": "latest",
+        "jsonwebtoken": "^9.0.2",
+        "mongoose": "^9.0.0",
+        "stockfish.js": "^10.0.2"
+    },
+    "devDependencies": {
+        "@types/node": "^24.10.1",
+        "bun-types": "latest"
+    }
+}
