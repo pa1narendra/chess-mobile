@@ -11,6 +11,16 @@ const gameSchema = new mongoose.Schema({
         w: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         b: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
     },
+    // Game settings
+    timeControl: {
+        initial: { type: Number, default: 600000 }, // Initial time in ms (default 10 min)
+        increment: { type: Number, default: 0 }     // Increment per move in ms
+    },
+    isBot: { type: Boolean, default: false },
+    botDifficulty: { type: Number, default: 1 },
+    isPrivate: { type: Boolean, default: false },
+    // Game state
+    status: { type: String, enum: ['waiting', 'active', 'finished', 'abandoned'], default: 'waiting' },
     fen: { type: String, required: true },
     pgn: { type: String },
     moves: [{
@@ -25,6 +35,11 @@ const gameSchema = new mongoose.Schema({
         winner: { type: String, enum: ['w', 'b', 'draw', null], default: null },
         reason: { type: String, default: null }
     },
+    // Time tracking
+    timeRemaining: {
+        w: { type: Number },
+        b: { type: Number }
+    },
     analysis: {
         evaluated: { type: Boolean, default: false },
         evaluations: [{
@@ -37,6 +52,8 @@ const gameSchema = new mongoose.Schema({
         analyzedAt: { type: Date }
     },
     createdAt: { type: Date, default: Date.now },
+    startedAt: { type: Date },  // When both players joined and game started
+    endedAt: { type: Date },    // When game finished
     updatedAt: { type: Date, default: Date.now }
 });
 

@@ -11,7 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_chess_board: ^1.0.1
-  google_fonts: ^6.3.0
+  google_fonts: 6.1.0
   http: ^1.6.0
   intl: ^0.20.2
   lucide_icons: ^0.257.0

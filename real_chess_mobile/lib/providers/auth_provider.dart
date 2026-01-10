@@ -13,65 +13,84 @@ class AuthProvider with ChangeNotifier {
   String? get token => _token;
   Map<String, dynamic>? get user => _user;
 
+  // Callback to disconnect socket on logout
+  VoidCallback? onLogout;
+
   AuthProvider() {
     _init();
   }
 
   Future<void> _init() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('token');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _token = prefs.getString('token');
 
-    if (_token != null) {
-      // Verify token
-      final result = await ApiService.getMe(_token!);
-      if (result['status'] == 'success' && result['data'] != null) {
-        _user = result['data'];
-        _isAuthenticated = true;
-      } else {
-        await prefs.remove('token');
-        _token = null;
-        _isAuthenticated = false;
+      if (_token != null && _token!.isNotEmpty) {
+        // Verify token
+        try {
+          final result = await ApiService.getMe(_token!);
+          // Backend returns user object directly from /auth/me
+          if (result['_id'] != null || result['username'] != null) {
+            _user = result;
+            _isAuthenticated = true;
+          } else {
+            await _clearSession(prefs);
+          }
+        } catch (e) {
+          await _clearSession(prefs);
+        }
       }
+    } catch (e) {
+      // SharedPreferences error - continue without auth
     }
-    
+
     _isInitialized = true;
     notifyListeners();
   }
 
-  Future<void> login(String email, String password) async {
-    try {
-      final result = await ApiService.login(email, password);
-      if (result['success'] == true || result['token'] != null) {
-        final token = result['token'];
-        final user = result['user'];
-        
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('token', token);
-        
-        _token = token;
-        _user = user;
-        _isAuthenticated = true;
-        notifyListeners();
-      } else {
-        throw Exception(result['message'] ?? 'Login failed');
-      }
-    } catch (e) {
-      rethrow;
-    }
+  Future<void> _clearSession(SharedPreferences prefs) async {
+    await prefs.remove('token');
+    _token = null;
+    _isAuthenticated = false;
+    _user = null;
   }
-  
+
+  Future<void> login(String username, String password) async {
+    if (username.isEmpty || password.isEmpty) {
+      throw ApiException('Username and password are required');
+    }
+
+    final result = await ApiService.login(username, password);
+
+    // Validate response has token
+    final token = result['token'];
+    if (token == null || token is! String || token.isEmpty) {
+      throw ApiException('Invalid login response');
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('token', token);
+
+    _token = token;
+    _user = result['user'];
+    _isAuthenticated = true;
+    notifyListeners();
+  }
+
   Future<void> register(String username, String email, String password) async {
-     try {
-       await ApiService.register(username, email, password);
-       // Auto login after register or just return?
-       // Usually we might want to auto-login.
-       await login(email, password);
-     } catch (e) {
-       rethrow;
-     }
+    if (username.isEmpty || email.isEmpty || password.isEmpty) {
+      throw ApiException('All fields are required');
+    }
+
+    await ApiService.register(username, email, password);
+    // Auto login after register
+    await login(username, password);
   }
 
   Future<void> logout() async {
+    // Notify any listeners to disconnect (e.g., socket)
+    onLogout?.call();
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('token');
     _token = null;

@@ -4,8 +4,12 @@ export interface GameState {
     id: string;
     fen: string;
     players: {
-        w?: string; // WebSocket ID
-        b?: string; // WebSocket ID
+        w?: string; // Player ID
+        b?: string; // Player ID
+    };
+    userIds: {
+        w?: string; // MongoDB User ID (for registered users)
+        b?: string; // MongoDB User ID (for registered users)
     };
     history: string[];
     turn: PlayerColor;

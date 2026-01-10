@@ -6,7 +6,12 @@ import 'screens/login_screen.dart';
 import 'providers/auth_provider.dart';
 import 'providers/game_provider.dart';
 
-void main() {
+import 'utils/config.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Config.load();
+  
   runApp(
     MultiProvider(
       providers: [

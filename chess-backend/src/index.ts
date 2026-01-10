@@ -14,6 +14,7 @@ connectDB();
 const app = new Elysia()
     .use(cors())
     .use(auth)
+    .get('/', () => 'Chess Backend Running')
     .use(searchRoutes);
 const gameManager = new GameManager(
     (gameId, result) => {
@@ -76,15 +77,24 @@ app.ws('/ws', {
 
         // Handle authentication via query param
         const token = ws.data.query.token;
+        let authenticated = false;
         if (token) {
             try {
                 const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key') as any;
                 authenticatedUsers.set(ws.id, decoded.id);
+                authenticated = true;
                 console.log(`[WS] Authenticated connection: ${decoded.username} (${decoded.id})`);
             } catch (e) {
                 console.log('[WS] Invalid token in query params');
             }
         }
+
+        // Send connection acknowledgment so client knows it's connected
+        ws.send(JSON.stringify({
+            type: 'CONNECTED',
+            authenticated,
+            message: 'Connected to chess server'
+        }));
     },
     message(ws, message: any) {
         const msg = message as WebSocketMessage;
@@ -167,6 +177,7 @@ app.ws('/ws', {
                 // Notify opponent that player joined
                 ws.publish(msg.gameId, JSON.stringify({
                     type: 'OPPONENT_JOINED',
+                    opponentId: playerId,
                 }));
 
                 // Broadcast update to lobby
@@ -465,7 +476,7 @@ app.ws('/ws', {
             return { error: error.message || 'Failed to fetch analysis' };
         }
     })
-    .listen(8080);
+    .listen({ port: 8080, hostname: '0.0.0.0' });
 
 console.log(`🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`);
 console.log('SERVER VERSION: WS-PUBLISH-FIX-V1');

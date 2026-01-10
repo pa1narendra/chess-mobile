@@ -13,27 +13,45 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  bool _hasNavigatedToGame = false;
+
   @override
   void initState() {
     super.initState();
     // Connect socket when Home loads
     final auth = Provider.of<AuthProvider>(context, listen: false);
+    final game = Provider.of<GameProvider>(context, listen: false);
+
     if (auth.token != null) {
-      Provider.of<GameProvider>(context, listen: false).initSocket(auth.token!);
+      game.initSocket(auth.token!);
     }
+
+    // Set up logout callback to disconnect socket
+    auth.onLogout = () {
+      game.disconnectSocket();
+    };
   }
 
   @override
   Widget build(BuildContext context) {
     return Consumer<GameProvider>(
       builder: (context, game, child) {
-        // Automatically navigate to GameScreen if in game
-        if (game.isInGame) {
+        // Automatically navigate to GameScreen if in game (only once)
+        if (game.isInGame && !_hasNavigatedToGame) {
+          _hasNavigatedToGame = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
-             Navigator.of(context).push(
-               MaterialPageRoute(builder: (_) => const GameScreen()),
-             );
+            if (mounted) {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const GameScreen()),
+              ).then((_) {
+                // Reset flag when returning from GameScreen
+                _hasNavigatedToGame = false;
+              });
+            }
           });
+        } else if (!game.isInGame) {
+          // Reset flag when game ends
+          _hasNavigatedToGame = false;
         }
 
         return Scaffold(
@@ -72,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   'Play vs Bot',
                   Icons.smart_toy,
                   Colors.purple,
-                  () => game.createGame('10+0', isBot: true),
+                  () => _showBotDifficultyDialog(context, game),
                 ),
                  const SizedBox(height: 16),
                 _buildActionButton(
@@ -84,31 +102,55 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
 
                 const SizedBox(height: 32),
-                const Text('Pending Games', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                Expanded(
-                  child: game.pendingGames.isEmpty
-                      ? const Center(child: Text('No pending games. Create one!'))
-                      : ListView.builder(
-                          itemCount: game.pendingGames.length,
-                          itemBuilder: (context, index) {
-                            final g = game.pendingGames[index];
-                            return Card(
-                              child: ListTile(
-                                title: Text(g['hostName'] ?? 'Unknown'),
-                                subtitle: Text('${g['timeControl']} • ${g['isBot'] ? 'Bot' : 'Human'}'),
-                                trailing: ElevatedButton(
-                                  onPressed: () => game.joinGame(g['id']),
-                                  child: const Text('Join'),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                ),
+                // Spacer to push content up if needed
+                const Spacer(),
               ],
             ),
           ),
         );
+      },
+    );
+  }
+
+  void _showBotDifficultyDialog(BuildContext context, GameProvider game) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Select Bot Difficulty'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildDifficultyOption(ctx, game, 1, 'Beginner', 'Perfect for learning', Colors.green),
+            _buildDifficultyOption(ctx, game, 2, 'Easy', 'Casual play', Colors.lightGreen),
+            _buildDifficultyOption(ctx, game, 3, 'Medium', 'A fair challenge', Colors.orange),
+            _buildDifficultyOption(ctx, game, 4, 'Hard', 'For experienced players', Colors.deepOrange),
+            _buildDifficultyOption(ctx, game, 5, 'Expert', 'Maximum difficulty', Colors.red),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDifficultyOption(BuildContext context, GameProvider game, int level, String title, String subtitle, Color color) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: color,
+        child: Text(
+          '$level',
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+      ),
+      title: Text(title),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+      onTap: () {
+        Navigator.pop(context);
+        game.createGame('10+0', isBot: true, botDifficulty: level);
       },
     );
   }

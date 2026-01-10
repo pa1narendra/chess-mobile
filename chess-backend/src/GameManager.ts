@@ -40,10 +40,21 @@ export class GameManager {
             playerColor = 'b';
         }
 
+        // Build userIds for in-memory state
+        const memoryUserIds: { w?: string; b?: string } = {};
+        if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
+            if (players.w === playerId) {
+                memoryUserIds.w = userId;
+            } else if (players.b === playerId) {
+                memoryUserIds.b = userId;
+            }
+        }
+
         this.games.set(gameId, {
             id: gameId,
             fen: chess.fen(),
             players,
+            userIds: memoryUserIds,
             history: [],
             turn: 'w',
             timeRemaining: { w: durationMs, b: durationMs },
@@ -78,7 +89,20 @@ export class GameManager {
             players,
             userIds,
             fen: chess.fen(),
-            moves: []
+            moves: [],
+            timeControl: {
+                initial: durationMs,
+                increment: 0
+            },
+            timeRemaining: {
+                w: durationMs,
+                b: durationMs
+            },
+            isBot,
+            botDifficulty,
+            isPrivate,
+            status: isBot ? 'active' : 'waiting', // Bot games start immediately
+            startedAt: isBot ? new Date() : undefined
         });
         gameDB.save()
             .then(() => console.log(`[DB] Game ${gameId} created with userIds:`, userIds))
@@ -108,10 +132,16 @@ export class GameManager {
 
         if (!game.players.w) {
             game.players.w = playerId;
-            // Update DB
-            const updateData: any = { 'players.w': playerId };
+            // Update DB - game is now starting
+            const updateData: any = {
+                'players.w': playerId,
+                status: 'active',
+                startedAt: new Date(),
+                updatedAt: new Date()
+            };
             if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
                 updateData['userIds.w'] = userId;
+                game.userIds.w = userId; // Also update in-memory
             }
             Game.findOneAndUpdate({ gameId }, updateData).exec();
 
@@ -123,10 +153,16 @@ export class GameManager {
         }
         if (!game.players.b) {
             game.players.b = playerId;
-            // Update DB
-            const updateData: any = { 'players.b': playerId };
+            // Update DB - game is now starting
+            const updateData: any = {
+                'players.b': playerId,
+                status: 'active',
+                startedAt: new Date(),
+                updatedAt: new Date()
+            };
             if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
                 updateData['userIds.b'] = userId;
+                game.userIds.b = userId; // Also update in-memory
             }
             Game.findOneAndUpdate({ gameId }, updateData).exec();
 
@@ -198,11 +234,16 @@ export class GameManager {
                                 to: move.to,
                                 promotion: move.promotion,
                                 san: result.san,
-                                color: result.color
+                                color: result.color,
+                                timestamp: new Date()
                             }
                         },
                         fen: game.fen,
                         pgn: chess.pgn(),
+                        timeRemaining: {
+                            w: game.timeRemaining.w,
+                            b: game.timeRemaining.b
+                        },
                         updatedAt: new Date()
                     }
                 ).exec().catch(err => console.error(`[GameManager] Failed to save move to DB:`, err));
@@ -447,18 +488,32 @@ export class GameManager {
         const game = this.games.get(gameId);
         if (!game) return;
 
-        // Update DB
+        // Prevent double processing
+        if (game.status === 'finished') {
+            console.log(`[GameManager] Game ${gameId} already finished, skipping handleGameOver`);
+            return;
+        }
+
+        // Update DB with complete final state
+        const chess = this.chessInstances.get(gameId);
         Game.findOneAndUpdate(
             { gameId },
             {
                 result: { winner, reason },
-                fen: game.fen, // Save final FEN
+                fen: game.fen,
+                pgn: chess?.pgn() || '',
+                status: 'finished',
+                timeRemaining: {
+                    w: game.timeRemaining.w,
+                    b: game.timeRemaining.b
+                },
+                endedAt: new Date(),
                 updatedAt: new Date()
             }
         ).exec().catch(err => console.error(`[GameManager] Failed to save game result to DB:`, err));
 
-        // Update User Stats
-        this.updateUserStats(game.players.w, game.players.b, winner);
+        // Update User Stats (use userIds for registered users, not players which might be 'bot')
+        this.updateUserStats(game.userIds.w, game.userIds.b, winner);
 
         // Mark as finished instead of deleting
         game.status = 'finished';
@@ -538,6 +593,12 @@ export class GameManager {
         const game = this.games.get(gameId);
         if (!game) {
             console.log(`[GameManager] Game ${gameId} not found in handleTimeout`);
+            return;
+        }
+
+        // Prevent race condition - don't process if game already finished
+        if (game.status === 'finished') {
+            console.log(`[GameManager] Game ${gameId} already finished, skipping timeout`);
             return;
         }
 

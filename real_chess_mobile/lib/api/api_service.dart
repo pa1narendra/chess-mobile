@@ -1,65 +1,131 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import '../utils/config.dart';
+
+class ApiException implements Exception {
+  final String message;
+  final int? statusCode;
+
+  ApiException(this.message, {this.statusCode});
+
+  @override
+  String toString() => message;
+}
 
 class ApiService {
-  // Use 10.0.2.2 for Android Emulator to access host's localhost
-  // If running on a physical device, this needs  // Use computer's IP for physical device
-  static const String baseUrl = 'http://192.168.1.146:8080'; 
+  static const Duration _timeout = Duration(seconds: 30);
 
-  static Future<Map<String, dynamic>> login(String email, String password) async {
+  static String get baseUrl => Config.baseUrl;
+
+  static void _log(String message) {
+    print('[API] $message');
+  }
+
+  static Future<Map<String, dynamic>> login(String username, String password) async {
+    final url = '$baseUrl/auth/login';
+    final bodyData = {'username': username, 'password': password};
+    
+    _log('Request: POST $url');
+    _log('Body: $bodyData');
+
     try {
       final response = await http.post(
-        Uri.parse('$baseUrl/auth/login'),
+        Uri.parse(url),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'password': password}),
-      );
+        body: jsonEncode(bodyData),
+      ).timeout(_timeout);
 
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+      _log('Response Status: ${response.statusCode}');
+      _log('Response Body: ${response.body}');
+
+      final body = jsonDecode(response.body);
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return body;
       } else {
-        throw Exception('Login failed: ${response.body}');
+        final message = body['error'] ?? 'Login failed';
+        throw ApiException(message, statusCode: response.statusCode);
       }
+    } on TimeoutException {
+      _log('Error: Connection timed out');
+      throw ApiException('Connection timed out. Please check your network.');
+    } on FormatException {
+      _log('Error: Invalid response format');
+      throw ApiException('Invalid response from server');
     } catch (e) {
-      throw Exception('Connection error: $e');
+      _log('Error: $e');
+      if (e is ApiException) rethrow;
+      throw ApiException('Connection error. Please check your network.');
     }
   }
 
   static Future<Map<String, dynamic>> register(String username, String email, String password) async {
+    final url = '$baseUrl/auth/register';
+    final bodyData = {'username': username, 'email': email, 'password': password};
+
+    _log('Request: POST $url');
+    _log('Body: $bodyData');
+
     try {
       final response = await http.post(
-        Uri.parse('$baseUrl/auth/register'),
+        Uri.parse(url),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'username': username, 'email': email, 'password': password}),
-      );
+        body: jsonEncode(bodyData),
+      ).timeout(_timeout);
 
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+      _log('Response Status: ${response.statusCode}');
+      _log('Response Body: ${response.body}');
+
+      final body = jsonDecode(response.body);
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return body;
       } else {
-        throw Exception('Registration failed: ${response.body}');
+        final message = body['error'] ?? 'Registration failed';
+        throw ApiException(message, statusCode: response.statusCode);
       }
+    } on TimeoutException {
+      _log('Error: Connection timed out');
+      throw ApiException('Connection timed out. Please check your network.');
+    } on FormatException {
+      _log('Error: Invalid response format');
+      throw ApiException('Invalid response from server');
     } catch (e) {
-      throw Exception('Connection error: $e');
+      _log('Error: $e');
+      if (e is ApiException) rethrow;
+      throw ApiException('Connection error. Please check your network.');
     }
   }
 
   static Future<Map<String, dynamic>> getMe(String token) async {
+    final url = '$baseUrl/auth/me';
+    _log('Request: GET $url');
+
     try {
       final response = await http.get(
-        Uri.parse('$baseUrl/auth/me'),
+        Uri.parse(url),
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
         },
-      );
+      ).timeout(_timeout);
 
-      if (response.statusCode == 200) {
+      _log('Response Status: ${response.statusCode}');
+      _log('Response Body: ${response.body}');
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
         return jsonDecode(response.body);
       } else {
-        return {'status': 'error'};
+        throw ApiException('Failed to get user info', statusCode: response.statusCode);
       }
+    } on TimeoutException {
+       _log('Error: Connection timed out');
+      throw ApiException('Connection timed out');
     } catch (e) {
-        return {'status': 'error'};
+      _log('Error: $e');
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to verify session');
     }
   }
 }
+
