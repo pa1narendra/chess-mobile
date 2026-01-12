@@ -19,7 +19,8 @@ export class GameManager {
     }
 
     createGame(playerId: string, durationMinutes: number = 10, randomizeColor: boolean = false, isPrivate: boolean = false, isBot: boolean = false, botDifficulty: number = 1, userId?: string): string {
-        const gameId = Math.random().toString(36).substring(2, 8);
+        // Generate 6-digit numeric code for easier sharing
+        const gameId = Math.floor(100000 + Math.random() * 900000).toString();
         const chess = new Chess();
         const durationMs = durationMinutes * 60 * 1000;
 
@@ -62,7 +63,7 @@ export class GameManager {
             isPrivate,
             isBot,
             botDifficulty,
-            status: 'active'
+            status: isBot ? 'active' : 'waiting'
         });
 
         this.chessInstances.set(gameId, chess);
@@ -469,19 +470,38 @@ export class GameManager {
         this.handleGameOver(gameId, winner, reason);
     }
 
-    draw(gameId: string, playerId: string) {
-        // For simplicity, we'll just allow immediate draw. 
-        // In a real app, this should be a draw offer/accept flow.
+    offerDraw(gameId: string, playerId: string) {
         const game = this.games.get(gameId);
-        if (!game) return;
+        if (!game || game.status !== 'active') return null;
 
         const playerColor = game.players.w === playerId ? 'w' : (game.players.b === playerId ? 'b' : null);
-        if (!playerColor) return;
+        if (!playerColor) return null;
 
-        const winner = 'draw';
-        const reason = 'mutual agreement';
+        game.drawOffer = playerColor;
+        return playerColor;
+    }
 
-        this.handleGameOver(gameId, winner, reason);
+    acceptDraw(gameId: string, playerId: string) {
+        const game = this.games.get(gameId);
+        if (!game || game.status !== 'active') return false;
+
+        const playerColor = game.players.w === playerId ? 'w' : (game.players.b === playerId ? 'b' : null);
+        if (!playerColor || !game.drawOffer || game.drawOffer === playerColor) return false;
+
+        // Draw accepted
+        this.handleGameOver(gameId, 'draw', 'mutual agreement');
+        return true;
+    }
+
+    declineDraw(gameId: string, playerId: string) {
+        const game = this.games.get(gameId);
+        if (!game || game.status !== 'active') return false;
+
+        const playerColor = game.players.w === playerId ? 'w' : (game.players.b === playerId ? 'b' : null);
+        if (!playerColor || !game.drawOffer || game.drawOffer === playerColor) return false;
+
+        game.drawOffer = undefined;
+        return true;
     }
 
     private handleGameOver(gameId: string, winner: string | null, reason: string | null) {

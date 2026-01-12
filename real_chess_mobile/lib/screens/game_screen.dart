@@ -14,14 +14,53 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> {
   Timer? _timer;
+  // Flag to prevent double dialogs
+  bool _isDialogShowing = false;
 
   @override
   void initState() {
     super.initState();
+    // Listen for draw offers
+    final gameProvider = Provider.of<GameProvider>(context, listen: false);
+    gameProvider.drawOfferStream.listen((_) {
+      if (mounted && !_isDialogShowing) {
+        _showDrawOfferDialog();
+      }
+    });
     // Start timer to update display every second
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
+  }
+
+  void _showDrawOfferDialog() {
+    setState(() => _isDialogShowing = true);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Draw Offered'),
+        content: const Text('Your opponent has offered a draw. Do you accept?'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _isDialogShowing = false);
+              Provider.of<GameProvider>(context, listen: false).declineDraw();
+            },
+            child: const Text('Decline'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _isDialogShowing = false);
+              Provider.of<GameProvider>(context, listen: false).acceptDraw();
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -42,139 +81,193 @@ class _GameScreenState extends State<GameScreen> {
   Widget build(BuildContext context) {
     return Consumer<GameProvider>(
       builder: (context, game, child) {
-        return PopScope(
-          canPop: true,
-          onPopInvokedWithResult: (didPop, result) {
-            if (didPop) {
-              game.leaveGame();
-            }
-          },
-          child: Scaffold(
+        return Scaffold(
             appBar: AppBar(
-              title: const Text('Game in Progress'),
-              leading: IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () {
-                  game.leaveGame();
-                  Navigator.pop(context);
-                },
-              ),
+              title: const Text('Real Chess'),
+              centerTitle: true,
               actions: [
                 // Connection status indicator
                 Padding(
                   padding: const EdgeInsets.only(right: 8.0),
                   child: _buildConnectionIndicator(game.connectionState),
                 ),
-              ],
-            ),
-            body: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Error message display
-                if (game.errorMessage != null)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.error_outline, color: Colors.red),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            game.errorMessage!,
-                            style: const TextStyle(color: Colors.red),
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () => game.clearError(),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                // Game status display
-                if (game.gameStatus != null)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      game.gameStatus!,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                PopupMenuButton<String>(
+                  onSelected: (value) {
+                    if (value == 'resign') {
+                      _showResignConfirmation(context);
+                    } else if (value == 'draw') {
+                      game.offerDraw();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Draw offer sent')),
+                      );
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: 'resign',
+                      child: Row(
+                        children: [
+                          Icon(Icons.flag, color: Colors.red),
+                          SizedBox(width: 8),
+                          Text('Resign'),
+                        ],
                       ),
-                      textAlign: TextAlign.center,
                     ),
-                  ),
-
-                // Opponent info with timer (shown at top, so it's the opposite color)
-                _buildPlayerBar(
-                  context,
-                  'Opponent',
-                  game.playerColor == 'w' ? game.timeRemaining['b']! : game.timeRemaining['w']!,
-                  isCurrentTurn: game.currentTurn != game.playerColor,
-                  isOpponent: true,
-                ),
-
-                Expanded(
-                  child: Center(
-                    child: ChessBoard(
-                      controller: game.controller,
-                      enableUserMoves: game.currentTurn == game.playerColor,
-                      boardColor: BoardColor.brown,
-                      boardOrientation: game.playerColor == 'w'
-                          ? PlayerColor.white
-                          : PlayerColor.black,
-                      onMove: () {
-                        // Get the last move from the controller
-                        try {
-                          final moveHistory = game.controller.getSan();
-                          if (moveHistory != null && moveHistory.isNotEmpty) {
-                            // Parse the last move - we need from/to squares
-                            // The controller should have made the move already
-                            // We'll extract from the game state
-                            final gameState = game.controller.game;
-                            final history = gameState.history;
-                            if (history.isNotEmpty) {
-                              final lastMove = history.last;
-                              final from = lastMove.move.fromAlgebraic;
-                              final to = lastMove.move.toAlgebraic;
-                              final promotion = lastMove.move.promotion?.name;
-                              game.onUserMove(from, to, promotion: promotion);
-                            }
-                          }
-                        } catch (e) {
-                          // ignore: avoid_print
-                          print('Error detecting move: $e');
-                        }
-                      },
+                    const PopupMenuItem(
+                      value: 'draw',
+                      child: Row(
+                        children: [
+                          Icon(Icons.handshake),
+                          SizedBox(width: 8),
+                          Text('Offer Draw'),
+                        ],
+                      ),
                     ),
-                  ),
-                ),
-
-                // Player info with timer (shown at bottom)
-                _buildPlayerBar(
-                  context,
-                  'You',
-                  game.playerColor == 'w' ? game.timeRemaining['w']! : game.timeRemaining['b']!,
-                  isCurrentTurn: game.currentTurn == game.playerColor,
-                  isOpponent: false,
+                  ],
                 ),
               ],
             ),
-          ),
-        );
+            body: PopScope(
+              canPop: false,
+              onPopInvoked: (didPop) async {
+                if (didPop) return;
+                
+                if (game.isInGame && game.gameStatus != null && !game.gameStatus!.startsWith('Game Over')) {
+                   // In game - confirm simple exit (forfeit warning)
+                   final shouldLeave = await showDialog<bool>(
+                     context: context,
+                     builder: (ctx) => AlertDialog(
+                       title: const Text('Leave Game?'),
+                       content: const Text('Leaving now will forfeit the game. Are you sure?'),
+                       actions: [
+                         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                         TextButton(
+                           onPressed: () {
+                              // Resign on leave
+                              game.resign(); 
+                              Navigator.pop(ctx, true);
+                           }, 
+                           child: const Text('Leave & Resign', style: TextStyle(color: Colors.red))
+                         ),
+                       ],
+                     ),
+                   );
+                   
+                   if (shouldLeave == true && context.mounted) {
+                     game.leaveGame();
+                     Navigator.of(context).pop();
+                   }
+                } else {
+                  // Not started or game over - just leave
+                  game.leaveGame();
+                  Navigator.of(context).pop();
+                }
+              },
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Error message display
+                  if (game.errorMessage != null)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline, color: Colors.red),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              game.errorMessage!,
+                              style: const TextStyle(color: Colors.red),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => game.clearError(),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                  // Game status display
+                  if (game.gameStatus != null)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        game.gameStatus!,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+
+                  // Opponent info
+                  _buildPlayerBar(
+                    context,
+                    game.playerColor == 'w' ? game.blackPlayerName : game.whitePlayerName,
+                    game.playerColor == 'w' ? game.timeRemaining['b']! : game.timeRemaining['w']!,
+                    isCurrentTurn: game.currentTurn != game.playerColor,
+                    isOpponent: true,
+                  ),
+
+                  Expanded(
+                    child: Center(
+                      child: ChessBoard(
+                        controller: game.controller,
+                        enableUserMoves: game.currentTurn == game.playerColor,
+                        boardColor: BoardColor.brown,
+                        boardOrientation: game.playerColor == 'w'
+                            ? PlayerColor.white
+                            : PlayerColor.black,
+                        onMove: () {
+                          // ... existing move logic ...
+                          try {
+                            final moveHistory = game.controller.getSan();
+                            if (moveHistory != null && moveHistory.isNotEmpty) {
+                              final gameState = game.controller.game;
+                              final history = gameState.history;
+                              if (history.isNotEmpty) {
+                                final lastMove = history.last;
+                                final from = lastMove.move.fromAlgebraic;
+                                final to = lastMove.move.toAlgebraic;
+                                final promotion = lastMove.move.promotion?.name;
+                                game.onUserMove(from, to, promotion: promotion);
+                              }
+                            }
+                          } catch (e) {
+                            // ignore: avoid_print
+                            print('Error detecting move: $e');
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+
+                  // Player info
+                  _buildPlayerBar(
+                    context,
+                    game.playerColor == 'w' ? game.whitePlayerName : game.blackPlayerName,
+                    game.playerColor == 'w' ? game.timeRemaining['w']! : game.timeRemaining['b']!,
+                    isCurrentTurn: game.currentTurn == game.playerColor,
+                    isOpponent: false,
+                  ),
+                ],
+              ),
+            ),
+          );
       },
     );
   }
@@ -265,6 +358,26 @@ class _GameScreenState extends State<GameScreen> {
           color: color,
           shape: BoxShape.circle,
         ),
+      ),
+    );
+  }
+  void _showResignConfirmation(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Resign?'),
+        content: const Text('Are you sure you want to resign this game?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              Provider.of<GameProvider>(context, listen: false).resign();
+              Navigator.pop(ctx);
+            },
+            child: const Text('Resign', style: TextStyle(color: Colors.white)),
+          ),
+        ],
       ),
     );
   }

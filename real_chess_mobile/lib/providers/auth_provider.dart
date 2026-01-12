@@ -34,10 +34,20 @@ class AuthProvider with ChangeNotifier {
             _user = result;
             _isAuthenticated = true;
           } else {
-            await _clearSession(prefs);
+             // Response valid but data missing? Rare constraint.
+             // Keep authenticated but maybe without user details for now
+             _isAuthenticated = true;
           }
         } catch (e) {
-          await _clearSession(prefs);
+          // Only clear session if we KNOW the token is invalid (401)
+          if (e is ApiException && e.statusCode == 401) {
+             print('[Auth] Token expired or invalid (401). Clearing session.');
+             await _clearSession(prefs);
+          } else {
+             print('[Auth] Verification failed ($e) but keeping session. Offline/Network issue?');
+             // Assume token is valid for now to avoid logging out user on network glitch
+             _isAuthenticated = true;
+          }
         }
       }
     } catch (e) {

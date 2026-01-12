@@ -95,10 +95,10 @@ class _HomeScreenState extends State<HomeScreen> {
                  const SizedBox(height: 16),
                 _buildActionButton(
                   context,
-                  'Create Game',
-                  Icons.add_circle,
+                  'Play with Friends',
+                  Icons.group,
                   Colors.blue,
-                  () => game.createGame('10+0'),
+                  () => _showPlayOptionsDialog(context, game),
                 ),
 
                 const SizedBox(height: 32),
@@ -152,6 +152,79 @@ class _HomeScreenState extends State<HomeScreen> {
         Navigator.pop(context);
         game.createGame('10+0', isBot: true, botDifficulty: level);
       },
+    );
+  }
+
+  void _showPlayOptionsDialog(BuildContext context, GameProvider game) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Play with Friends'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.add_circle, color: Colors.blue),
+              title: const Text('Create New Game'),
+              subtitle: const Text('Get a code to share'),
+              onTap: () {
+                Navigator.pop(ctx);
+                game.createGame('10+0', isBot: false);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.input, color: Colors.green),
+              title: const Text('Join Game'),
+              subtitle: const Text('Enter a code'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showJoinGameDialog(context, game);
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+             onPressed: () => Navigator.pop(ctx),
+             child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showJoinGameDialog(BuildContext context, GameProvider game) {
+    final codeController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Join Game'),
+        content: TextField(
+          controller: codeController,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Game Code',
+            hintText: 'Enter 6-digit code',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final code = codeController.text.trim();
+              if (code.isNotEmpty) {
+                Navigator.pop(ctx);
+                game.joinGame(code);
+              }
+            },
+            child: const Text('Join'),
+          ),
+        ],
+      ),
     );
   }
 

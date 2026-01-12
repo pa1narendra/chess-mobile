@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia';
 import { GameManager } from './GameManager';
 import { WebSocketMessage } from './types';
 import connectDB from './db';
+import { User } from './schemas/user';
 import jwt from 'jsonwebtoken';
 
 import { cors } from '@elysiajs/cors';
@@ -96,8 +97,9 @@ app.ws('/ws', {
             message: 'Connected to chess server'
         }));
     },
-    message(ws, message: any) {
+    async message(ws, message: any) {
         const msg = message as WebSocketMessage;
+
 
         if (msg.type === 'INIT_GAME') {
             let playerId = msg.playerId;
@@ -125,13 +127,29 @@ app.ws('/ws', {
 
             const gameId = gameManager.createGame(playerId, msg.timeControl, false, msg.isPrivate, msg.isBot, msg.botDifficulty, userId);
             ws.subscribe(gameId);
+            // Fetch usernames
+            let whiteName = 'Player';
+            let blackName = 'Opponent';
+
+            if (userId) {
+                // The creator is White in non-random games, or we check color
+                const game = gameManager.getGame(gameId);
+                const user = await User.findById(userId);
+                if (user) {
+                    if (game?.players.w === playerId) whiteName = user.username;
+                    else if (game?.players.b === playerId) blackName = user.username;
+                }
+            }
+
             ws.send({
                 type: 'GAME_CREATED',
                 gameId,
                 color: 'w',
                 fen: gameManager.getGame(gameId)?.fen,
                 timeRemaining: gameManager.getGame(gameId)?.timeRemaining,
-                history: gameManager.getGame(gameId)?.history || []
+                history: gameManager.getGame(gameId)?.history || [],
+                whitePlayerName: whiteName,
+                blackPlayerName: blackName
             });
 
             // Broadcast update to lobby
@@ -165,19 +183,39 @@ app.ws('/ws', {
             const color = gameManager.joinGame(msg.gameId, playerId, userId);
             if (color) {
                 ws.subscribe(msg.gameId);
+                // Fetch usernames
+                let whiteName = 'White';
+                let blackName = 'Black';
+
+                const game = gameManager.getGame(msg.gameId);
+                if (game) {
+                    if (game.userIds.w) {
+                        const u = await User.findById(game.userIds.w);
+                        if (u) whiteName = u.username;
+                    }
+                    if (game.userIds.b) {
+                        const u = await User.findById(game.userIds.b);
+                        if (u) blackName = u.username;
+                    }
+                }
+
                 ws.send({
                     type: 'GAME_JOINED',
                     gameId: msg.gameId,
                     color,
                     fen: gameManager.getGame(msg.gameId)?.fen,
                     timeRemaining: gameManager.getGame(msg.gameId)?.timeRemaining,
-                    history: gameManager.getGame(msg.gameId)?.history || []
+                    history: gameManager.getGame(msg.gameId)?.history || [],
+                    whitePlayerName: whiteName,
+                    blackPlayerName: blackName
                 });
 
                 // Notify opponent that player joined
                 ws.publish(msg.gameId, JSON.stringify({
                     type: 'OPPONENT_JOINED',
                     opponentId: playerId,
+                    whitePlayerName: whiteName,
+                    blackPlayerName: blackName
                 }));
 
                 // Broadcast update to lobby
@@ -231,10 +269,27 @@ app.ws('/ws', {
             if (playerId) {
                 gameManager.resign(msg.gameId, playerId);
             }
-        } else if (msg.type === 'DRAW') {
+        } else if (msg.type === 'DRAW_OFFER') {
             const playerId = users.get(ws.id);
             if (playerId) {
-                gameManager.draw(msg.gameId, playerId);
+                const color = gameManager.offerDraw(msg.gameId, playerId);
+                if (color) {
+                    ws.publish(msg.gameId, JSON.stringify({ type: 'DRAW_OFFER', color }));
+                }
+            }
+        } else if (msg.type === 'DRAW_ACCEPT') {
+            const playerId = users.get(ws.id);
+            if (playerId) {
+                const success = gameManager.acceptDraw(msg.gameId, playerId);
+                // If success, GAME_OVER handled by GameManager callback
+            }
+        } else if (msg.type === 'DRAW_DECLINE') {
+            const playerId = users.get(ws.id);
+            if (playerId) {
+                const success = gameManager.declineDraw(msg.gameId, playerId);
+                if (success) {
+                    ws.publish(msg.gameId, JSON.stringify({ type: 'DRAW_DECLINE' }));
+                }
             }
         } else if (msg.type === 'GET_PENDING_GAMES') {
             ws.send({

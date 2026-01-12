@@ -21,7 +21,8 @@ export interface GameState {
     isPrivate?: boolean;
     isBot?: boolean;
     botDifficulty?: number;
-    status: 'active' | 'finished';
+    status: 'active' | 'finished' | 'waiting';
+    drawOffer?: 'w' | 'b'; // Color of player who offered draw
     finishedAt?: number;
     result?: {
         winner: string | null;
@@ -34,10 +35,12 @@ export type WebSocketMessage =
     | { type: 'JOIN_GAME'; gameId: string; playerId: string; token?: string }
     | { type: 'MOVE'; from: string; to: string; promotion?: string; token?: string; gameId: string }
     | { type: 'RESIGN'; gameId: string; playerId: string }
-    | { type: 'DRAW'; gameId: string; playerId: string }
-    | { type: 'GET_PENDING_GAMES' }
-    | { type: 'QUICK_PLAY'; playerId: string; timeControl: number; token?: string }
-    | { type: 'SYNC_TIME'; gameId: string };
+    | { type: 'DRAW_OFFER'; gameId: string; token?: string }
+    | { type: 'DRAW_ACCEPT'; gameId: string; token?: string }
+    | { type: 'DRAW_DECLINE'; gameId: string; token?: string }
+    | { type: 'GET_PENDING_GAMES'; token?: string }
+    | { type: 'QUICK_PLAY'; timeControl: number; playerId: string; isBot?: boolean; botDifficulty?: number; token?: string }
+    | { type: 'SYNC_TIME'; gameId: string; token?: string };
 
 export type WebSocketResponse =
     | { type: 'GAME_CREATED'; gameId: string; color: PlayerColor; fen: string; timeRemaining: { w: number; b: number }; history: string[] }
