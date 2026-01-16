@@ -1,5 +1,5 @@
 name: real_chess_mobile
-description: A new Flutter project for Real Chess.
+description: Chessing - A modern chess game with online multiplayer and offline bot play.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -18,15 +18,25 @@ dependencies:
   provider: ^6.1.5+1
   shared_preferences: ^2.5.3
   web_socket_channel: ^3.0.3
-
-  # Dependencies will be added via command line to ensure valid versions
+  connectivity_plus: ^6.0.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+# App icon configuration
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#0F172A"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  min_sdk_android: 21
 
 flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/icon/

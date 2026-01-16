@@ -149,7 +149,8 @@ app.ws('/ws', {
                 timeRemaining: gameManager.getGame(gameId)?.timeRemaining,
                 history: gameManager.getGame(gameId)?.history || [],
                 whitePlayerName: whiteName,
-                blackPlayerName: blackName
+                blackPlayerName: blackName,
+                isPrivate: msg.isPrivate
             });
 
             // Broadcast update to lobby
@@ -317,52 +318,70 @@ app.ws('/ws', {
 
             users.set(ws.id, playerId);
 
+            // Subscribe to personal channel for match notifications
+            ws.subscribe(`user:${ws.id}`);
 
-            const existingGameId = gameManager.findOpenGame(msg.timeControl);
-            if (existingGameId) {
-                // Join existing game
-                const color = gameManager.joinGame(existingGameId, playerId, userId);
-                if (color) {
-                    ws.subscribe(existingGameId);
-                    ws.send({
-                        type: 'GAME_JOINED',
-                        gameId: existingGameId,
-                        color,
-                        fen: gameManager.getGame(existingGameId)?.fen,
-                        timeRemaining: gameManager.getGame(existingGameId)?.timeRemaining,
-                        history: gameManager.getGame(existingGameId)?.history || []
-                    });
-                    ws.publish(existingGameId, JSON.stringify({
-                        type: 'OPPONENT_JOINED',
-                    }));
+            const result = gameManager.queueForMatch(playerId, userId, ws.id, msg.timeControl || 10);
 
-                    // Broadcast update to lobby
-                    app.server?.publish('lobby', JSON.stringify({
-                        type: 'PENDING_GAMES_UPDATE',
-                        games: gameManager.getPendingGames()
-                    }));
-                }
-            } else {
-                // Create new game
-                const gameId = gameManager.createGame(playerId, msg.timeControl, true, false, false, 1, userId);
-                const game = gameManager.getGame(gameId);
-                const color = game?.players.w === playerId ? 'w' : 'b';
-
-                ws.subscribe(gameId);
+            if (result.status === 'QUEUED') {
+                // Player added to queue, notify them
                 ws.send({
-                    type: 'GAME_CREATED',
-                    gameId,
-                    color,
-                    fen: game?.fen,
-                    timeRemaining: game?.timeRemaining,
-                    history: game?.history || []
+                    type: 'QUEUE_STATUS',
+                    status: 'QUEUED',
+                    message: 'Looking for opponent...',
+                    timeControl: msg.timeControl || 10,
+                });
+            } else if (result.status === 'MATCHED') {
+                // Match found!
+                const game = gameManager.getGame(result.gameId!);
+
+                // Subscribe joining player to game room
+                ws.subscribe(result.gameId!);
+
+                // Fetch usernames
+                let whiteName = 'White';
+                let blackName = 'Black';
+
+                if (game?.userIds.w) {
+                    const u = await User.findById(game.userIds.w);
+                    if (u) whiteName = u.username;
+                }
+                if (game?.userIds.b) {
+                    const u = await User.findById(game.userIds.b);
+                    if (u) blackName = u.username;
+                }
+
+                // Send MATCH_FOUND to joining player (black)
+                ws.send({
+                    type: 'MATCH_FOUND',
+                    gameId: result.gameId,
+                    color: result.color,
+                    fen: result.fen,
+                    timeRemaining: result.timeRemaining,
+                    history: game?.history || [],
+                    whitePlayerName: whiteName,
+                    blackPlayerName: blackName,
                 });
 
-                // Broadcast update to lobby
-                app.server?.publish('lobby', JSON.stringify({
-                    type: 'PENDING_GAMES_UPDATE',
-                    games: gameManager.getPendingGames()
-                }));
+                // Notify the waiting player (white) via their personal channel
+                if (result.opponentWsId) {
+                    app.server?.publish(`user:${result.opponentWsId}`, JSON.stringify({
+                        type: 'MATCH_FOUND',
+                        gameId: result.gameId,
+                        color: result.opponentColor,
+                        fen: result.fen,
+                        timeRemaining: result.timeRemaining,
+                        history: game?.history || [],
+                        whitePlayerName: whiteName,
+                        blackPlayerName: blackName,
+                    }));
+                }
+            }
+        } else if (msg.type === 'CANCEL_QUEUE') {
+            const playerId = users.get(ws.id);
+            if (playerId) {
+                gameManager.removeFromQueue(playerId);
+                ws.send({ type: 'QUEUE_CANCELLED' });
             }
         } else if (msg.type === 'SYNC_TIME') {
             const playerId = users.get(ws.id);
@@ -378,6 +397,9 @@ app.ws('/ws', {
         authenticatedUsers.delete(ws.id);
 
         if (playerId) {
+            // Remove from matchmaking queue if in queue
+            gameManager.removeFromQueue(playerId);
+
             // If the player was in a pending game (waiting for opponent), remove it
             const cleaned = gameManager.cleanupPendingGame(playerId);
             if (cleaned) {
@@ -534,6 +556,17 @@ app.ws('/ws', {
     .listen({ port: 8080, hostname: '0.0.0.0' });
 
 console.log(`🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`);
-console.log('SERVER VERSION: WS-PUBLISH-FIX-V1');
+console.log('SERVER VERSION: MATCHMAKING-QUEUE-V2');
+
+// Periodic queue cleanup every 5 seconds
+setInterval(() => {
+    const timedOutWsIds = gameManager.cleanupStaleQueue();
+    for (const wsId of timedOutWsIds) {
+        app.server?.publish(`user:${wsId}`, JSON.stringify({
+            type: 'QUEUE_TIMEOUT',
+            message: 'No opponent found. Please try again.',
+        }));
+    }
+}, 5000);
 
 

@@ -1,0 +1,52 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="512" height="512" rx="128" fill="#0D1117"/>
+
+  <!-- Gradient definition -->
+  <defs>
+    <linearGradient id="tealGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#14B8A6"/>
+      <stop offset="100%" style="stop-color:#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="glowGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#14B8A6;stop-opacity:0.3"/>
+      <stop offset="100%" style="stop-color:#3B82F6;stop-opacity:0.1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Glow effect -->
+  <circle cx="256" cy="240" r="160" fill="url(#glowGradient)"/>
+
+  <!-- Chess King piece -->
+  <g transform="translate(256, 256)">
+    <!-- Base -->
+    <path d="M-80 100 L80 100 L70 80 L-70 80 Z" fill="url(#tealGradient)"/>
+
+    <!-- Lower body -->
+    <path d="M-60 80 L60 80 L50 20 L-50 20 Z" fill="url(#tealGradient)"/>
+
+    <!-- Middle section -->
+    <path d="M-45 20 L45 20 L40 -20 C40 -20 30 -30 0 -30 C-30 -30 -40 -20 -40 -20 L-45 20 Z" fill="url(#tealGradient)"/>
+
+    <!-- Crown base -->
+    <ellipse cx="0" cy="-35" rx="35" ry="12" fill="url(#tealGradient)"/>
+
+    <!-- Crown -->
+    <path d="M-35 -45 L-35 -75 L-20 -60 L0 -85 L20 -60 L35 -75 L35 -45 Z" fill="url(#tealGradient)"/>
+
+    <!-- Cross on top -->
+    <rect x="-5" y="-115" width="10" height="35" rx="3" fill="url(#tealGradient)"/>
+    <rect x="-15" y="-105" width="30" height="10" rx="3" fill="url(#tealGradient)"/>
+  </g>
+
+  <!-- Decorative chess board pattern (bottom corners) -->
+  <g opacity="0.3">
+    <rect x="40" y="400" width="24" height="24" fill="#14B8A6"/>
+    <rect x="64" y="424" width="24" height="24" fill="#14B8A6"/>
+    <rect x="88" y="400" width="24" height="24" fill="#14B8A6"/>
+
+    <rect x="400" y="400" width="24" height="24" fill="#14B8A6"/>
+    <rect x="424" y="424" width="24" height="24" fill="#14B8A6"/>
+    <rect x="448" y="400" width="24" height="24" fill="#14B8A6"/>
+  </g>
+</svg>

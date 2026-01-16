@@ -40,6 +40,7 @@ export type WebSocketMessage =
     | { type: 'DRAW_DECLINE'; gameId: string; token?: string }
     | { type: 'GET_PENDING_GAMES'; token?: string }
     | { type: 'QUICK_PLAY'; timeControl: number; playerId: string; isBot?: boolean; botDifficulty?: number; token?: string }
+    | { type: 'CANCEL_QUEUE'; token?: string }
     | { type: 'SYNC_TIME'; gameId: string; token?: string };
 
 export type WebSocketResponse =

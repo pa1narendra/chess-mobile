@@ -4,10 +4,30 @@ import { Game } from './schemas/game';
 import { User } from './schemas/user';
 import { BotManager } from './BotManager';
 
+interface QueueEntry {
+    playerId: string;
+    userId?: string;
+    wsId: string;
+    timeControl: number;
+    queuedAt: number;
+}
+
+interface QueueResult {
+    status: 'QUEUED' | 'MATCHED';
+    gameId?: string;
+    color?: string;
+    opponentWsId?: string;
+    opponentColor?: string;
+    fen?: string;
+    timeRemaining?: { w: number; b: number };
+}
+
 export class GameManager {
     private games: Map<string, GameState> = new Map();
     private chessInstances: Map<string, Chess> = new Map();
     private timeoutHandlers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+    private matchmakingQueue: Map<string, QueueEntry> = new Map();
+    private matchmakingTimeout = 30000; // 30 seconds
     private onMove?: (gameId: string, result: any) => void;
     private onGameOver: (gameId: string, result: any) => void;
     public botManager: BotManager;
@@ -16,6 +36,150 @@ export class GameManager {
         this.onGameOver = onGameOver;
         this.onMove = onMove;
         this.botManager = new BotManager();
+    }
+
+    // Matchmaking queue methods
+    queueForMatch(playerId: string, userId: string | undefined, wsId: string, timeControl: number): QueueResult {
+        // Check if already in queue
+        if (this.matchmakingQueue.has(playerId)) {
+            return { status: 'QUEUED' };
+        }
+
+        // Check if already in an active game
+        for (const game of this.games.values()) {
+            if ((game.players.w === playerId || game.players.b === playerId) && game.status === 'active') {
+                // Already in a game
+                return { status: 'QUEUED' };
+            }
+        }
+
+        // Try to find a match atomically
+        for (const [queuedPlayerId, queued] of this.matchmakingQueue.entries()) {
+            // Match conditions: same time control, not same player
+            if (queued.timeControl === timeControl && queuedPlayerId !== playerId) {
+                // Found a match! Remove from queue and create game
+                this.matchmakingQueue.delete(queuedPlayerId);
+
+                // Create game with both players
+                const gameId = this.createMatchedGame(
+                    queuedPlayerId, queued.userId,
+                    playerId, userId,
+                    timeControl
+                );
+
+                const game = this.games.get(gameId);
+
+                return {
+                    status: 'MATCHED',
+                    gameId,
+                    color: 'b', // Joining player is black
+                    opponentWsId: queued.wsId,
+                    opponentColor: 'w',
+                    fen: game?.fen,
+                    timeRemaining: game?.timeRemaining
+                };
+            }
+        }
+
+        // No match found, add to queue
+        this.matchmakingQueue.set(playerId, {
+            playerId,
+            userId,
+            wsId,
+            timeControl,
+            queuedAt: Date.now(),
+        });
+
+        return { status: 'QUEUED' };
+    }
+
+    private createMatchedGame(
+        whitePlayerId: string, whiteUserId: string | undefined,
+        blackPlayerId: string, blackUserId: string | undefined,
+        durationMinutes: number
+    ): string {
+        const gameId = Math.floor(100000 + Math.random() * 900000).toString();
+        const chess = new Chess();
+        const durationMs = durationMinutes * 60 * 1000;
+
+        const players = { w: whitePlayerId, b: blackPlayerId };
+        const userIds: { w?: string; b?: string } = {};
+
+        if (whiteUserId && /^[0-9a-fA-F]{24}$/.test(whiteUserId)) {
+            userIds.w = whiteUserId;
+        }
+        if (blackUserId && /^[0-9a-fA-F]{24}$/.test(blackUserId)) {
+            userIds.b = blackUserId;
+        }
+
+        this.games.set(gameId, {
+            id: gameId,
+            fen: chess.fen(),
+            players,
+            userIds,
+            history: [],
+            turn: 'w',
+            timeRemaining: { w: durationMs, b: durationMs },
+            lastMoveTime: Date.now(),
+            isPrivate: false,
+            isBot: false,
+            botDifficulty: 1,
+            status: 'active'
+        });
+
+        this.chessInstances.set(gameId, chess);
+
+        // Save to DB
+        const gameDB = new Game({
+            gameId,
+            players,
+            userIds,
+            fen: chess.fen(),
+            moves: [],
+            timeControl: {
+                initial: durationMs,
+                increment: 0
+            },
+            timeRemaining: {
+                w: durationMs,
+                b: durationMs
+            },
+            isBot: false,
+            botDifficulty: 1,
+            isPrivate: false,
+            status: 'active',
+            startedAt: new Date()
+        });
+        gameDB.save()
+            .then(() => console.log(`[DB] Matched game ${gameId} created`))
+            .catch(err => console.error(`[DB] Failed to save matched game ${gameId}:`, err.message));
+
+        // Start timer
+        this.resetMoveTimer(gameId);
+
+        return gameId;
+    }
+
+    removeFromQueue(playerId: string): boolean {
+        return this.matchmakingQueue.delete(playerId);
+    }
+
+    cleanupStaleQueue(): string[] {
+        const now = Date.now();
+        const timedOut: string[] = [];
+
+        for (const [playerId, queued] of this.matchmakingQueue.entries()) {
+            if (now - queued.queuedAt > this.matchmakingTimeout) {
+                this.matchmakingQueue.delete(playerId);
+                timedOut.push(queued.wsId);
+            }
+        }
+
+        return timedOut; // Return wsIds to notify
+    }
+
+    isInQueue(playerId: string): boolean {
+        return this.matchmakingQueue.has(playerId);
     }
 
     createGame(playerId: string, durationMinutes: number = 10, randomizeColor: boolean = false, isPrivate: boolean = false, isBot: boolean = false, botDifficulty: number = 1, userId?: string): string {

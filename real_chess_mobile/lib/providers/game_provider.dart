@@ -1,11 +1,19 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_chess_board/flutter_chess_board.dart';
+import 'package:chess/chess.dart' as chess_lib;
 import '../api/socket_service.dart';
+import '../services/bot_service.dart';
+import '../services/network_service.dart';
+import '../services/error_service.dart';
 
 class GameProvider with ChangeNotifier {
   SocketService? _socket;
   ChessBoardController controller = ChessBoardController();
+
+  // Offline bot services
+  final LocalBotService _localBot = LocalBotService();
+  final NetworkService _networkService = NetworkService();
 
   String? _gameId;
   String _playerColor = 'w'; // 'w' or 'b'
@@ -15,6 +23,15 @@ class GameProvider with ChangeNotifier {
   String? _errorMessage; // Error from server
   String? _gameCode; // Shareable Game Code
   SocketConnectionState _connectionState = SocketConnectionState.disconnected;
+
+  // Queue state
+  bool _isInQueue = false;
+  String? _queueMessage;
+
+  // Offline game state
+  bool _isOfflineGame = false;
+  BotDifficulty? _currentBotDifficulty;
+  chess_lib.Chess? _offlineChess;
 
   // Pending games list
   List<dynamic> _pendingGames = [];
@@ -50,6 +67,17 @@ class GameProvider with ChangeNotifier {
   String? get errorMessage => _errorMessage;
   SocketConnectionState get connectionState => _connectionState;
   List<dynamic> get pendingGames => _pendingGames;
+  bool get isInQueue => _isInQueue;
+  String? get queueMessage => _queueMessage;
+  bool get isOfflineGame => _isOfflineGame;
+  bool get isOnline => _networkService.isOnline;
+
+  Future<void> initNetworkService() async {
+    await _networkService.initialize();
+    _networkService.onStatusChange.listen((isOnline) {
+      notifyListeners();
+    });
+  }
 
   void clearError() {
     _errorMessage = null;
@@ -100,7 +128,12 @@ class GameProvider with ChangeNotifier {
         // If we created it and it's private (waiting), store the code
         if (type == 'GAME_CREATED') {
              _gameCode = _gameId; 
-             _gameStatus = 'Waiting for opponent... Code: $_gameCode';
+             final isPrivate = msg['isPrivate'] == true;
+             if (isPrivate) {
+                _gameStatus = 'Waiting for opponent... Code: $_gameCode';
+             } else {
+                _gameStatus = 'Searching for opponent...';
+             }
         } else {
              _gameCode = null;
              _gameStatus = null;
@@ -179,7 +212,7 @@ class GameProvider with ChangeNotifier {
 
       case 'ERROR':
         final message = msg['message'];
-        _errorMessage = message?.toString() ?? 'Unknown error';
+        _errorMessage = ErrorService.getUserFriendlyMessage(message?.toString());
         notifyListeners();
         break;
 
@@ -208,6 +241,68 @@ class GameProvider with ChangeNotifier {
 
       case 'DRAW_DECLINE':
         _errorMessage = "Opponent declined draw offer";
+        notifyListeners();
+        break;
+
+      case 'QUEUE_STATUS':
+        _isInQueue = true;
+        _queueMessage = msg['message'] ?? 'Looking for opponent...';
+        notifyListeners();
+        break;
+
+      case 'MATCH_FOUND':
+        _isInQueue = false;
+        _queueMessage = null;
+
+        final gameId = msg['gameId'];
+        final color = msg['color'];
+
+        if (gameId != null && color != null) {
+          _gameId = gameId.toString();
+          _playerColor = (color == 'w' || color == 'b') ? color : 'w';
+          _isInGame = true;
+          _errorMessage = null;
+          _gameStatus = null;
+          _gameCode = null;
+
+          _whitePlayerName = msg['whitePlayerName'];
+          _blackPlayerName = msg['blackPlayerName'];
+
+          final timeData = msg['timeRemaining'];
+          if (timeData != null && timeData is Map) {
+            _timeRemaining = {
+              'w': (timeData['w'] as num?)?.toInt() ?? 600000,
+              'b': (timeData['b'] as num?)?.toInt() ?? 600000,
+            };
+          }
+
+          final fen = msg['fen'];
+          if (fen != null && fen is String && fen.isNotEmpty) {
+            receiveMove(fen);
+            final fenParts = fen.split(' ');
+            if (fenParts.length > 1) {
+              _currentTurn = fenParts[1];
+            }
+          } else {
+            controller.resetBoard();
+            _currentTurn = 'w';
+          }
+
+          _startLocalTimer();
+        }
+        notifyListeners();
+        break;
+
+      case 'QUEUE_TIMEOUT':
+        _isInQueue = false;
+        _queueMessage = null;
+        _errorMessage = ErrorService.getUserFriendlyMessage(msg['message'] ?? 'queue timeout');
+        notifyListeners();
+        break;
+
+      case 'QUEUE_CANCELLED':
+        _isInQueue = false;
+        _queueMessage = null;
         notifyListeners();
         break;
     }
@@ -239,11 +334,24 @@ class GameProvider with ChangeNotifier {
 
   void quickPlay({String timeControl = '10+0'}) {
     if (_socket == null) return;
+
+    _isInQueue = true;
+    _queueMessage = 'Looking for opponent...';
+    notifyListeners();
+
     _socket!.send({
       'type': 'QUICK_PLAY',
       'timeControl': _parseTimeControl(timeControl),
       'token': _token,
     });
+  }
+
+  void cancelQueue() {
+    if (_socket == null) return;
+    _socket!.send({'type': 'CANCEL_QUEUE'});
+    _isInQueue = false;
+    _queueMessage = null;
+    notifyListeners();
   }
 
   // Called by GameScreen when user makes a move on the board
@@ -337,18 +445,46 @@ class GameProvider with ChangeNotifier {
         timer.cancel();
         return;
       }
-      
+
       // If waiting for opponent, don't decrement
-      if (_gameCode != null) return;
+      if (_gameCode != null && !_isOfflineGame) return;
 
       if (_timeRemaining[_currentTurn]! > 0) {
         _timeRemaining[_currentTurn] = _timeRemaining[_currentTurn]! - 1000;
-        if (_timeRemaining[_currentTurn]! < 0) _timeRemaining[_currentTurn] = 0;
+        if (_timeRemaining[_currentTurn]! <= 0) {
+          _timeRemaining[_currentTurn] = 0;
+          // Timeout - game over
+          _handleTimeout();
+          timer.cancel();
+        }
         notifyListeners();
       } else {
+        // Time already at 0
+        _handleTimeout();
         timer.cancel();
       }
     });
+  }
+
+  void _handleTimeout() {
+    final loser = _currentTurn;
+    final winner = loser == 'w' ? 'b' : 'w';
+
+    if (_isOfflineGame) {
+      // Offline game timeout
+      if (loser == _playerColor) {
+        _gameStatus = 'Game Over: You lost on time!';
+      } else {
+        _gameStatus = 'Game Over: You won on time!';
+      }
+    } else {
+      // Online game timeout
+      _gameStatus = 'Game Over: ${winner == 'w' ? 'White' : 'Black'} wins on time!';
+    }
+
+    _isInGame = false;
+    debugPrint('[Timer] Timeout! $loser ran out of time. Game status: $_gameStatus');
+    notifyListeners();
   }
 
   void _stopLocalTimer() {
@@ -362,11 +498,178 @@ class GameProvider with ChangeNotifier {
     _socket = null;
   }
 
+  // Offline Bot Game Methods
+  Future<void> startOfflineBotGame(int difficulty) async {
+    debugPrint('[Bot] Starting offline bot game with difficulty $difficulty');
+    try {
+      await _localBot.initialize();
+      debugPrint('[Bot] Local bot initialized');
+
+      _isOfflineGame = true;
+      _isInGame = true;
+      _playerColor = 'w';
+      _currentTurn = 'w';
+      _currentBotDifficulty = BotDifficulty.fromLevel(difficulty);
+      _gameStatus = null;
+      _errorMessage = null;
+      _gameCode = null;
+      _gameId = 'offline_${DateTime.now().millisecondsSinceEpoch}';
+
+      // Initialize offline chess instance
+      _offlineChess = chess_lib.Chess();
+      debugPrint('[Bot] Chess instance created, FEN: ${_offlineChess!.fen}');
+
+      // Reset board
+      controller.resetBoard();
+
+      // Initialize time
+      _timeRemaining = {'w': 600000, 'b': 600000};
+      _startLocalTimer();
+
+      // Set names
+      _whitePlayerName = 'You';
+      _blackPlayerName = 'Bot (${_currentBotDifficulty!.displayName})';
+
+      debugPrint('[Bot] Game started successfully, isInGame: $_isInGame, isOfflineGame: $_isOfflineGame');
+      notifyListeners();
+    } catch (e, stackTrace) {
+      debugPrint('[Bot] Error starting game: $e');
+      debugPrint('[Bot] Stack trace: $stackTrace');
+      _errorMessage = ErrorService.getUserFriendlyMessage('engine $e');
+      notifyListeners();
+    }
+  }
+
+  Future<void> onUserMoveOffline(String from, String to, {String? promotion}) async {
+    debugPrint('[Bot] onUserMoveOffline called: $from -> $to, promotion: $promotion');
+    debugPrint('[Bot] isOfflineGame: $_isOfflineGame, offlineChess: ${_offlineChess != null}, currentTurn: $_currentTurn, playerColor: $_playerColor');
+
+    if (!_isOfflineGame || _offlineChess == null || _currentTurn != _playerColor) {
+      debugPrint('[Bot] Move rejected - conditions not met');
+      return;
+    }
+
+    try {
+      // Make player move
+      final move = _offlineChess!.move({
+        'from': from,
+        'to': to,
+        if (promotion != null) 'promotion': promotion,
+      });
+
+      if (move == null) {
+        _errorMessage = 'Invalid move';
+        notifyListeners();
+        return;
+      }
+
+      // Update board
+      controller.loadFen(_offlineChess!.fen);
+      _currentTurn = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+      notifyListeners();
+
+      // Check for game over
+      if (_checkGameOver()) return;
+
+      // Bot's turn
+      await _makeBotMove();
+    } catch (e) {
+      _errorMessage = ErrorService.getUserFriendlyMessage('invalid move $e');
+      notifyListeners();
+    }
+  }
+
+  Future<void> _makeBotMove() async {
+    debugPrint('[Bot] _makeBotMove called');
+    debugPrint('[Bot] isOfflineGame: $_isOfflineGame, difficulty: $_currentBotDifficulty, chess: ${_offlineChess != null}');
+
+    if (!_isOfflineGame || _currentBotDifficulty == null || _offlineChess == null) {
+      debugPrint('[Bot] _makeBotMove aborted - conditions not met');
+      return;
+    }
+
+    try {
+      debugPrint('[Bot] Thinking... FEN: ${_offlineChess!.fen}');
+
+      // Small delay to feel natural
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      final fen = _offlineChess!.fen;
+      final bestMove = await _localBot.getBestMove(fen, _currentBotDifficulty!);
+      debugPrint('[Bot] Best move calculated: $bestMove');
+
+      // Parse UCI move (e2e4)
+      final from = bestMove.substring(0, 2);
+      final to = bestMove.substring(2, 4);
+      final promotion = bestMove.length > 4 ? bestMove.substring(4, 5) : null;
+
+      debugPrint('[Bot] Making move: $from -> $to, promotion: $promotion');
+
+      // Make bot move
+      _offlineChess!.move({
+        'from': from,
+        'to': to,
+        if (promotion != null) 'promotion': promotion,
+      });
+
+      debugPrint('[Bot] Move made, new FEN: ${_offlineChess!.fen}');
+
+      // Update controller display
+      controller.loadFen(_offlineChess!.fen);
+
+      _currentTurn = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+      debugPrint('[Bot] Turn updated to: $_currentTurn');
+      notifyListeners();
+
+      _checkGameOver();
+    } catch (e, stackTrace) {
+      debugPrint('[Bot] Error in _makeBotMove: $e');
+      debugPrint('[Bot] Stack: $stackTrace');
+      _errorMessage = ErrorService.getUserFriendlyMessage('bot $e');
+      notifyListeners();
+    }
+  }
+
+  bool _checkGameOver() {
+    if (_offlineChess == null) return false;
+
+    if (_offlineChess!.game_over) {
+      if (_offlineChess!.in_checkmate) {
+        final winner = _offlineChess!.turn == chess_lib.Color.WHITE ? 'Black' : 'White';
+        _gameStatus = 'Game Over: Checkmate - $winner wins!';
+      } else if (_offlineChess!.in_draw) {
+        _gameStatus = 'Game Over: Draw';
+      } else if (_offlineChess!.in_stalemate) {
+        _gameStatus = 'Game Over: Stalemate';
+      } else if (_offlineChess!.insufficient_material) {
+        _gameStatus = 'Game Over: Draw - Insufficient material';
+      } else if (_offlineChess!.in_threefold_repetition) {
+        _gameStatus = 'Game Over: Draw - Threefold repetition';
+      }
+
+      _stopLocalTimer();
+      notifyListeners();
+      return true;
+    }
+
+    return false;
+  }
+
+  void stopOfflineGame() {
+    _isOfflineGame = false;
+    _offlineChess = null;
+    _currentBotDifficulty = null;
+    _localBot.stopThinking();
+    leaveGame();
+  }
+
   @override
   void dispose() {
     _socket?.disconnect();
     _stopLocalTimer();
     _drawOfferController.close();
+    _localBot.dispose();
+    _networkService.dispose();
     super.dispose();
   }
 }
