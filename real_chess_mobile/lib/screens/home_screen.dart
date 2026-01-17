@@ -125,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   gradient: [AppColors.amberWarning, const Color(0xFFEF4444)],
                   onTap: game.isInQueue
                       ? () => _showCancelQueueDialog(context, game)
-                      : () => game.quickPlay(),
+                      : () => _showTimeControlDialog(context, game),
                   isLoading: game.isInQueue,
                 ),
                 const SizedBox(height: 12),
@@ -426,6 +426,81 @@ class _HomeScreenState extends State<HomeScreen> {
               game.cancelQueue();
               Navigator.pop(ctx);
             },
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showTimeControlDialog(BuildContext context, GameProvider game) {
+    final timeControls = [
+      {'minutes': 1, 'label': '1 min', 'subtitle': 'Bullet', 'color': AppColors.roseError},
+      {'minutes': 3, 'label': '3 min', 'subtitle': 'Bullet', 'color': Colors.deepOrange},
+      {'minutes': 5, 'label': '5 min', 'subtitle': 'Blitz', 'color': AppColors.amberWarning},
+      {'minutes': 10, 'label': '10 min', 'subtitle': 'Rapid', 'color': AppColors.tealAccent},
+      {'minutes': 15, 'label': '15 min', 'subtitle': 'Rapid', 'color': AppColors.electricBlue},
+      {'minutes': 30, 'label': '30 min', 'subtitle': 'Classical', 'color': AppColors.purpleAccent},
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.timer_rounded, color: AppColors.amberWarning),
+            const SizedBox(width: 8),
+            const Text('Select Time Control'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: timeControls.map((tc) {
+              final color = tc['color'] as Color;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.borderColor),
+                ),
+                child: ListTile(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  leading: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: color.withOpacity(0.5)),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${tc['minutes']}',
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                  title: Text(tc['label'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(tc['subtitle'] as String, style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.textMuted),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    game.quickPlay(timeControl: '${tc['minutes']}+0');
+                  },
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel'),
           ),
         ],

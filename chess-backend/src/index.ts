@@ -62,6 +62,29 @@ const gameManager = new GameManager(
                 }
             }
         }
+    },
+    (gameId, playerId, color) => {
+        // onPlayerDisconnected callback
+        console.log(`[Main] Player ${playerId} (${color}) disconnected from game ${gameId}`);
+        const payload = JSON.stringify({
+            type: 'OPPONENT_DISCONNECTED',
+            message: 'Opponent disconnected. They have 60 seconds to reconnect.',
+            disconnectedColor: color
+        });
+        if (app.server) {
+            app.server.publish(gameId, payload);
+        }
+    },
+    (gameId, playerId) => {
+        // onPlayerReconnected callback
+        console.log(`[Main] Player ${playerId} reconnected to game ${gameId}`);
+        const payload = JSON.stringify({
+            type: 'OPPONENT_RECONNECTED',
+            message: 'Opponent has reconnected!'
+        });
+        if (app.server) {
+            app.server.publish(gameId, payload);
+        }
     }
 );
 const users = new Map<string, string>(); // ws.id -> playerId
@@ -383,10 +406,81 @@ app.ws('/ws', {
                 gameManager.removeFromQueue(playerId);
                 ws.send({ type: 'QUEUE_CANCELLED' });
             }
+        } else if (msg.type === 'SUBSCRIBE_GAME') {
+            // Subscribe to a game room after receiving MATCH_FOUND
+            const gameId = msg.gameId;
+            if (gameId) {
+                ws.subscribe(gameId);
+                console.log(`[WS] Player ${ws.id} subscribed to game ${gameId}`);
+                ws.send({ type: 'SUBSCRIBED', gameId });
+            }
         } else if (msg.type === 'SYNC_TIME') {
             const playerId = users.get(ws.id);
             if (playerId) {
                 gameManager.checkTimeout(msg.gameId);
+            }
+        } else if (msg.type === 'REJOIN_GAME') {
+            let playerId = authenticatedUsers.get(ws.id);
+            let userId = playerId;
+
+            // Try to get from token if not authenticated via query
+            if (!playerId && msg.token) {
+                try {
+                    const decoded = jwt.verify(msg.token, process.env.JWT_SECRET || 'your-secret-key') as any;
+                    playerId = decoded.id;
+                    userId = decoded.id;
+                    if (playerId) {
+                        authenticatedUsers.set(ws.id, playerId);
+                    }
+                } catch (e) {
+                    console.log('[WS] Invalid token for rejoin');
+                }
+            }
+
+            if (!playerId) {
+                ws.send({ type: 'REJOIN_FAILED', message: 'Not authenticated' });
+                return;
+            }
+
+            users.set(ws.id, playerId);
+
+            const result = gameManager.rejoinGame(playerId, userId);
+
+            if (result && result.success && result.gameId) {
+                // Subscribe to game room
+                ws.subscribe(result.gameId);
+
+                // Fetch usernames
+                let whiteName = 'White';
+                let blackName = 'Black';
+
+                const game = gameManager.getGame(result.gameId);
+                if (game) {
+                    if (game.userIds.w) {
+                        const u = await User.findById(game.userIds.w);
+                        if (u) whiteName = u.username;
+                    }
+                    if (game.userIds.b) {
+                        const u = await User.findById(game.userIds.b);
+                        if (u) blackName = u.username;
+                    }
+                }
+
+                ws.send({
+                    type: 'REJOIN_SUCCESS',
+                    gameId: result.gameId,
+                    color: result.color,
+                    fen: result.fen,
+                    timeRemaining: result.timeRemaining,
+                    history: result.history || [],
+                    whitePlayerName: whiteName,
+                    blackPlayerName: blackName,
+                    opponentDisconnected: result.opponentDisconnected
+                });
+
+                console.log(`[WS] Player ${playerId} rejoined game ${result.gameId}`);
+            } else {
+                ws.send({ type: 'REJOIN_FAILED', message: 'No active game found' });
             }
         }
     },
@@ -400,15 +494,25 @@ app.ws('/ws', {
             // Remove from matchmaking queue if in queue
             gameManager.removeFromQueue(playerId);
 
-            // If the player was in a pending game (waiting for opponent), remove it
-            const cleaned = gameManager.cleanupPendingGame(playerId);
-            if (cleaned) {
-                console.log(`[WS] Cleaned up pending game for ${playerId}`);
-                // Broadcast update to lobby since a game was removed
-                app.server?.publish('lobby', JSON.stringify({
-                    type: 'PENDING_GAMES_UPDATE',
-                    games: gameManager.getPendingGames()
-                }));
+            // Check if player is in an active game
+            const activeGameId = gameManager.getActiveGameForPlayer(playerId);
+
+            if (activeGameId) {
+                const game = gameManager.getGame(activeGameId);
+                // If it's a pending game (waiting for opponent), clean it up
+                if (game && (!game.players.w || !game.players.b)) {
+                    const cleaned = gameManager.cleanupPendingGame(playerId);
+                    if (cleaned) {
+                        console.log(`[WS] Cleaned up pending game for ${playerId}`);
+                        app.server?.publish('lobby', JSON.stringify({
+                            type: 'PENDING_GAMES_UPDATE',
+                            games: gameManager.getPendingGames()
+                        }));
+                    }
+                } else {
+                    // Active game with both players - mark as disconnected, give 60s to reconnect
+                    gameManager.markPlayerDisconnected(playerId);
+                }
             }
         }
     }
@@ -568,5 +672,22 @@ setInterval(() => {
         }));
     }
 }, 5000);
+
+// Periodic disconnection cleanup every 10 seconds
+setInterval(() => {
+    const forfeits = gameManager.cleanupDisconnectedPlayers();
+    for (const forfeit of forfeits) {
+        console.log(`[Main] Player ${forfeit.forfeitPlayerId} forfeited game ${forfeit.gameId} due to disconnection timeout`);
+        // The GAME_OVER message is already published by handleGameOver via callback
+    }
+}, 10000);
+
+// Periodic abandoned game cleanup every 5 minutes
+setInterval(() => {
+    const cleanedCount = gameManager.cleanupAbandonedGames();
+    if (cleanedCount > 0) {
+        console.log(`[Main] Cleaned up ${cleanedCount} abandoned games`);
+    }
+}, 5 * 60 * 1000);
 
 

@@ -41,7 +41,9 @@ export type WebSocketMessage =
     | { type: 'GET_PENDING_GAMES'; token?: string }
     | { type: 'QUICK_PLAY'; timeControl: number; playerId: string; isBot?: boolean; botDifficulty?: number; token?: string }
     | { type: 'CANCEL_QUEUE'; token?: string }
-    | { type: 'SYNC_TIME'; gameId: string; token?: string };
+    | { type: 'SYNC_TIME'; gameId: string; token?: string }
+    | { type: 'REJOIN_GAME'; token?: string }
+    | { type: 'SUBSCRIBE_GAME'; gameId: string };
 
 export type WebSocketResponse =
     | { type: 'GAME_CREATED'; gameId: string; color: PlayerColor; fen: string; timeRemaining: { w: number; b: number }; history: string[] }

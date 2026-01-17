@@ -2,10 +2,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_chess_board/flutter_chess_board.dart';
 import 'package:chess/chess.dart' as chess_lib;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../api/socket_service.dart';
 import '../services/bot_service.dart';
 import '../services/network_service.dart';
 import '../services/error_service.dart';
+
+const String _activeGameKey = 'active_game_id';
+const String _playerColorKey = 'player_color';
 
 class GameProvider with ChangeNotifier {
   SocketService? _socket;
@@ -30,6 +34,7 @@ class GameProvider with ChangeNotifier {
 
   // Offline game state
   bool _isOfflineGame = false;
+  bool _isUntimedGame = false;
   BotDifficulty? _currentBotDifficulty;
   chess_lib.Chess? _offlineChess;
 
@@ -50,13 +55,69 @@ class GameProvider with ChangeNotifier {
   String? _whitePlayerName;
   String? _blackPlayerName;
 
+  // Opponent disconnection state
+  bool _opponentDisconnected = false;
+  String? _disconnectionMessage;
+
+  // Tap-to-move state
+  String? _selectedSquare;
+  List<String> _legalMoves = [];
+  List<String> _captureMoves = []; // Squares where captures can be made
+
   Map<String, int> get timeRemaining => _timeRemaining;
   String get currentTurn => _currentTurn;
   String get whitePlayerName => _whitePlayerName ?? 'White';
   String get blackPlayerName => _blackPlayerName ?? 'Black';
+  bool get opponentDisconnected => _opponentDisconnected;
+  String? get disconnectionMessage => _disconnectionMessage;
+  String? get selectedSquare => _selectedSquare;
+  List<String> get legalMoves => _legalMoves;
+  List<String> get captureMoves => _captureMoves;
 
   GameProvider() {
     // No longer using controller listener - using onMove callback instead
+  }
+
+  // Game state persistence methods
+  Future<void> _saveActiveGame() async {
+    if (_gameId != null && !_isOfflineGame) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_activeGameKey, _gameId!);
+      await prefs.setString(_playerColorKey, _playerColor);
+      debugPrint('[GameProvider] Saved active game: $_gameId, color: $_playerColor');
+    }
+  }
+
+  Future<void> _clearActiveGame() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_activeGameKey);
+    await prefs.remove(_playerColorKey);
+    debugPrint('[GameProvider] Cleared active game');
+  }
+
+  Future<Map<String, String>?> _loadActiveGame() async {
+    final prefs = await SharedPreferences.getInstance();
+    final gameId = prefs.getString(_activeGameKey);
+    final color = prefs.getString(_playerColorKey);
+    if (gameId != null && color != null) {
+      debugPrint('[GameProvider] Loaded active game: $gameId, color: $color');
+      return {'gameId': gameId, 'color': color};
+    }
+    return null;
+  }
+
+  // Try to rejoin active game on connection
+  Future<void> tryRejoinGame() async {
+    if (_socket == null || _isOfflineGame) return;
+
+    final savedGame = await _loadActiveGame();
+    if (savedGame != null) {
+      debugPrint('[GameProvider] Attempting to rejoin game: ${savedGame['gameId']}');
+      _socket!.send({
+        'type': 'REJOIN_GAME',
+        'token': _token,
+      });
+    }
   }
 
   bool get isInGame => _isInGame;
@@ -70,6 +131,7 @@ class GameProvider with ChangeNotifier {
   bool get isInQueue => _isInQueue;
   String? get queueMessage => _queueMessage;
   bool get isOfflineGame => _isOfflineGame;
+  bool get isUntimedGame => _isUntimedGame;
   bool get isOnline => _networkService.isOnline;
 
   Future<void> initNetworkService() async {
@@ -127,7 +189,7 @@ class GameProvider with ChangeNotifier {
         _gameId = gameId.toString();
         // If we created it and it's private (waiting), store the code
         if (type == 'GAME_CREATED') {
-             _gameCode = _gameId; 
+             _gameCode = _gameId;
              final isPrivate = msg['isPrivate'] == true;
              if (isPrivate) {
                 _gameStatus = 'Waiting for opponent... Code: $_gameCode';
@@ -142,11 +204,13 @@ class GameProvider with ChangeNotifier {
         _playerColor = (color == 'w' || color == 'b') ? color : 'w';
         _isInGame = true;
         _errorMessage = null;
-        
+        _opponentDisconnected = false;
+        _disconnectionMessage = null;
+
         // Update names
         _whitePlayerName = msg['whitePlayerName'];
         _blackPlayerName = msg['blackPlayerName'];
-      
+
         // Parse initial time
         final timeData = msg['timeRemaining'];
         if (timeData != null && timeData is Map) {
@@ -155,7 +219,7 @@ class GameProvider with ChangeNotifier {
             'b': (timeData['b'] as num?)?.toInt() ?? 600000,
           };
         }
-        
+
         _startLocalTimer();
 
         final fen = msg['fen'];
@@ -170,6 +234,9 @@ class GameProvider with ChangeNotifier {
           controller.resetBoard();
           _currentTurn = 'w';
         }
+
+        // Save active game for persistence
+        _saveActiveGame();
         notifyListeners();
         break;
 
@@ -199,6 +266,10 @@ class GameProvider with ChangeNotifier {
         final reason = msg['reason'] ?? 'Unknown';
         final winner = msg['winner'] ?? 'Unknown';
         _gameStatus = 'Game Over: $reason - Winner: $winner';
+        _opponentDisconnected = false;
+        _disconnectionMessage = null;
+        // Clear saved game since it's over
+        _clearActiveGame();
         notifyListeners();
         break;
 
@@ -219,6 +290,8 @@ class GameProvider with ChangeNotifier {
       case 'CONNECTED':
         // Server acknowledged connection - request pending games
         _socket?.send({'type': 'GET_PENDING_GAMES'});
+        // Try to rejoin any active game
+        tryRejoinGame();
         notifyListeners();
         break;
 
@@ -264,6 +337,8 @@ class GameProvider with ChangeNotifier {
           _errorMessage = null;
           _gameStatus = null;
           _gameCode = null;
+          _opponentDisconnected = false;
+          _disconnectionMessage = null;
 
           _whitePlayerName = msg['whitePlayerName'];
           _blackPlayerName = msg['blackPlayerName'];
@@ -289,6 +364,15 @@ class GameProvider with ChangeNotifier {
           }
 
           _startLocalTimer();
+
+          // Subscribe to game room to receive move updates
+          _socket?.send({
+            'type': 'SUBSCRIBE_GAME',
+            'gameId': gameId,
+          });
+
+          // Save active game for persistence
+          _saveActiveGame();
         }
         notifyListeners();
         break;
@@ -303,6 +387,69 @@ class GameProvider with ChangeNotifier {
       case 'QUEUE_CANCELLED':
         _isInQueue = false;
         _queueMessage = null;
+        notifyListeners();
+        break;
+
+      case 'REJOIN_SUCCESS':
+        final gameId = msg['gameId'];
+        final color = msg['color'];
+
+        if (gameId != null && color != null) {
+          _gameId = gameId.toString();
+          _playerColor = (color == 'w' || color == 'b') ? color : 'w';
+          _isInGame = true;
+          _errorMessage = null;
+          _gameStatus = null;
+          _gameCode = null;
+          _opponentDisconnected = msg['opponentDisconnected'] == true;
+          if (_opponentDisconnected) {
+            _disconnectionMessage = 'Opponent is disconnected. Waiting for them to reconnect...';
+          }
+
+          _whitePlayerName = msg['whitePlayerName'];
+          _blackPlayerName = msg['blackPlayerName'];
+
+          final timeData = msg['timeRemaining'];
+          if (timeData != null && timeData is Map) {
+            _timeRemaining = {
+              'w': (timeData['w'] as num?)?.toInt() ?? 600000,
+              'b': (timeData['b'] as num?)?.toInt() ?? 600000,
+            };
+          }
+
+          final fen = msg['fen'];
+          if (fen != null && fen is String && fen.isNotEmpty) {
+            receiveMove(fen);
+            final fenParts = fen.split(' ');
+            if (fenParts.length > 1) {
+              _currentTurn = fenParts[1];
+            }
+          } else {
+            controller.resetBoard();
+            _currentTurn = 'w';
+          }
+
+          _startLocalTimer();
+          debugPrint('[GameProvider] Rejoined game: $_gameId, color: $_playerColor');
+        }
+        notifyListeners();
+        break;
+
+      case 'REJOIN_FAILED':
+        // No active game to rejoin - clear saved state
+        _clearActiveGame();
+        debugPrint('[GameProvider] Rejoin failed: ${msg['message']}');
+        break;
+
+      case 'OPPONENT_DISCONNECTED':
+        _opponentDisconnected = true;
+        _disconnectionMessage = msg['message'] ?? 'Opponent disconnected. Waiting for reconnect...';
+        notifyListeners();
+        break;
+
+      case 'OPPONENT_RECONNECTED':
+        _opponentDisconnected = false;
+        _disconnectionMessage = null;
         notifyListeners();
         break;
     }
@@ -356,6 +503,11 @@ class GameProvider with ChangeNotifier {
 
   // Called by GameScreen when user makes a move on the board
   void onUserMove(String from, String to, {String? promotion}) {
+    // Clear selection
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
+
     if (_isServerUpdate) return;
     if (_socket == null || !_isInGame || _gameId == null) return;
 
@@ -375,17 +527,103 @@ class GameProvider with ChangeNotifier {
     });
   }
 
+  // Tap-to-move methods
+  void selectSquare(String square) {
+    // Get the chess instance for validation
+    chess_lib.Chess? chess;
+    if (_isOfflineGame && _offlineChess != null) {
+      chess = _offlineChess;
+    } else {
+      // For online games, create a temporary chess instance from current FEN
+      final fen = controller.getFen();
+      chess = chess_lib.Chess.fromFEN(fen);
+    }
+
+    if (chess == null) return;
+
+    // Check if it's the player's turn
+    final currentTurnColor = chess.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+    if (currentTurnColor != _playerColor) return;
+
+    // Check if the square has a piece of the current player
+    final piece = chess.get(square);
+    if (piece != null) {
+      final pieceColor = piece.color == chess_lib.Color.WHITE ? 'w' : 'b';
+      if (pieceColor == _playerColor) {
+        // Select this square and calculate legal moves
+        _selectedSquare = square;
+        final (moves, captures) = _calculateLegalMoves(chess, square);
+        _legalMoves = moves;
+        _captureMoves = captures;
+        notifyListeners();
+        return;
+      }
+    }
+
+    // If we have a selected square and tapped on a legal move destination
+    if (_selectedSquare != null && _legalMoves.contains(square)) {
+      _makeTapMove(_selectedSquare!, square);
+      return;
+    }
+
+    // Clear selection if tapped on empty or opponent's piece
+    clearSelection();
+  }
+
+  (List<String>, List<String>) _calculateLegalMoves(chess_lib.Chess chess, String fromSquare) {
+    final moves = chess.moves({'square': fromSquare, 'verbose': true});
+    final destinations = <String>[];
+    final captures = <String>[];
+    for (final move in moves) {
+      if (move is Map && move['to'] != null) {
+        final to = move['to'] as String;
+        destinations.add(to);
+        // Check if this is a capture move
+        if (move['captured'] != null) {
+          captures.add(to);
+        }
+      }
+    }
+    return (destinations, captures);
+  }
+
+  void clearSelection() {
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
+    _captureMoves = [];
+    notifyListeners();
+  }
+
+  void _makeTapMove(String from, String to) {
+    // Clear selection first
+    final fromSquare = from;
+    final toSquare = to;
+    clearSelection();
+
+    // Make the move using the existing controller
+    // The ChessBoard widget handles promotion dialogs automatically
+    try {
+      controller.makeMove(from: fromSquare, to: toSquare);
+      // The onMove callback in GameScreen will handle sending to server
+    } catch (e) {
+      debugPrint('Error making tap move: $e');
+    }
+  }
+
   void resign() {
-    // Implement resignation
-    // Backend needs a RESIGN message type, assuming standard logic implies sending a message
-    // If backend doesn't support explicit RESIGN type yet via WebSocket message for 'RESIGN',
-    // we might need to add it. But for now let's assume standard behavior or add a todo.
-    // Based on index.ts review, there wasn't a visible RESIGN handler in the snippet.
-    // I will add the send call, assuming backend handles it or I'll update backend.
-    // Index.ts showed handlers for INIT, JOIN, MOVE.
-    // I need to check if RESIGN is handled.
-    // Wait, the backend DID have `resign(gameId, playerId)` in GameManager, but how is it called?
-    // Let's assume we need to add a type 'RESIGN' to index.ts later if missing.
+    // Handle offline game resignation
+    if (_isOfflineGame) {
+      _gameStatus = 'Game Over: You resigned';
+      _stopLocalTimer();
+      _selectedSquare = null;
+      _legalMoves = [];
+      _captureMoves = [];
+      notifyListeners();
+      return;
+    }
+
+    // Handle online game resignation
     if (_socket == null || !_isInGame || _gameId == null) return;
     _socket!.send({
       'type': 'RESIGN',
@@ -425,21 +663,37 @@ class GameProvider with ChangeNotifier {
     _isServerUpdate = true;
     controller.loadFen(fen);
     _isServerUpdate = false;
+    // Clear selection when receiving a move
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
   }
 
 
   void leaveGame() {
     _isInGame = false;
+    _isUntimedGame = false;
     _gameId = null;
     _gameStatus = null;
     _errorMessage = null;
+    _opponentDisconnected = false;
+    _disconnectionMessage = null;
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
     _stopLocalTimer();
     controller.resetBoard();
+    // Clear saved game when explicitly leaving
+    _clearActiveGame();
     notifyListeners();
   }
 
   void _startLocalTimer() {
     _stopLocalTimer();
+
+    // Don't start timer for untimed games
+    if (_isUntimedGame) return;
+
     _gameTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_gameStatus != null && _gameStatus!.startsWith('Game Over')) {
         timer.cancel();
@@ -506,6 +760,7 @@ class GameProvider with ChangeNotifier {
       debugPrint('[Bot] Local bot initialized');
 
       _isOfflineGame = true;
+      _isUntimedGame = true; // Bot games are untimed
       _isInGame = true;
       _playerColor = 'w';
       _currentTurn = 'w';
@@ -522,15 +777,15 @@ class GameProvider with ChangeNotifier {
       // Reset board
       controller.resetBoard();
 
-      // Initialize time
-      _timeRemaining = {'w': 600000, 'b': 600000};
-      _startLocalTimer();
+      // Bot games are untimed - set time to -1 to indicate no timer
+      _timeRemaining = {'w': -1, 'b': -1};
+      // Don't start timer for untimed games
 
       // Set names
       _whitePlayerName = 'You';
       _blackPlayerName = 'Bot (${_currentBotDifficulty!.displayName})';
 
-      debugPrint('[Bot] Game started successfully, isInGame: $_isInGame, isOfflineGame: $_isOfflineGame');
+      debugPrint('[Bot] Game started successfully, isInGame: $_isInGame, isOfflineGame: $_isOfflineGame, untimed: $_isUntimedGame');
       notifyListeners();
     } catch (e, stackTrace) {
       debugPrint('[Bot] Error starting game: $e');
@@ -544,28 +799,27 @@ class GameProvider with ChangeNotifier {
     debugPrint('[Bot] onUserMoveOffline called: $from -> $to, promotion: $promotion');
     debugPrint('[Bot] isOfflineGame: $_isOfflineGame, offlineChess: ${_offlineChess != null}, currentTurn: $_currentTurn, playerColor: $_playerColor');
 
-    if (!_isOfflineGame || _offlineChess == null || _currentTurn != _playerColor) {
-      debugPrint('[Bot] Move rejected - conditions not met');
+    // Clear selection
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
+
+    if (!_isOfflineGame || _offlineChess == null) {
+      debugPrint('[Bot] Move rejected - not in offline game');
       return;
     }
 
     try {
-      // Make player move
-      final move = _offlineChess!.move({
-        'from': from,
-        'to': to,
-        if (promotion != null) 'promotion': promotion,
-      });
+      // Sync _offlineChess with the controller's state
+      // The ChessBoard widget already made the move on its internal engine
+      final currentFen = controller.getFen();
+      debugPrint('[Bot] Controller FEN after move: $currentFen');
 
-      if (move == null) {
-        _errorMessage = 'Invalid move';
-        notifyListeners();
-        return;
-      }
-
-      // Update board
-      controller.loadFen(_offlineChess!.fen);
+      // Update our offline chess instance to match the controller
+      _offlineChess = chess_lib.Chess.fromFEN(currentFen);
       _currentTurn = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+
+      debugPrint('[Bot] Synced _offlineChess, currentTurn: $_currentTurn');
       notifyListeners();
 
       // Check for game over
@@ -657,8 +911,12 @@ class GameProvider with ChangeNotifier {
 
   void stopOfflineGame() {
     _isOfflineGame = false;
+    _isUntimedGame = false;
     _offlineChess = null;
     _currentBotDifficulty = null;
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
     _localBot.stopThinking();
     leaveGame();
   }

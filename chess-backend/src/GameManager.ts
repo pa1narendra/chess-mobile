@@ -22,19 +22,37 @@ interface QueueResult {
     timeRemaining?: { w: number; b: number };
 }
 
+interface DisconnectedPlayer {
+    playerId: string;
+    gameId: string;
+    color: 'w' | 'b';
+    disconnectedAt: number;
+}
+
 export class GameManager {
     private games: Map<string, GameState> = new Map();
     private chessInstances: Map<string, Chess> = new Map();
     private timeoutHandlers: Map<string, ReturnType<typeof setTimeout>> = new Map();
     private matchmakingQueue: Map<string, QueueEntry> = new Map();
+    private disconnectedPlayers: Map<string, DisconnectedPlayer> = new Map(); // playerId -> disconnection info
     private matchmakingTimeout = 30000; // 30 seconds
+    private disconnectionTimeout = 60000; // 60 seconds to reconnect
     private onMove?: (gameId: string, result: any) => void;
     private onGameOver: (gameId: string, result: any) => void;
+    private onPlayerDisconnected?: (gameId: string, playerId: string, color: string) => void;
+    private onPlayerReconnected?: (gameId: string, playerId: string) => void;
     public botManager: BotManager;
 
-    constructor(onGameOver: (gameId: string, result: any) => void, onMove?: (gameId: string, result: any) => void) {
+    constructor(
+        onGameOver: (gameId: string, result: any) => void,
+        onMove?: (gameId: string, result: any) => void,
+        onPlayerDisconnected?: (gameId: string, playerId: string, color: string) => void,
+        onPlayerReconnected?: (gameId: string, playerId: string) => void
+    ) {
         this.onGameOver = onGameOver;
         this.onMove = onMove;
+        this.onPlayerDisconnected = onPlayerDisconnected;
+        this.onPlayerReconnected = onPlayerReconnected;
         this.botManager = new BotManager();
     }
 
@@ -180,6 +198,159 @@ export class GameManager {
 
     isInQueue(playerId: string): boolean {
         return this.matchmakingQueue.has(playerId);
+    }
+
+    // Disconnection handling methods
+    markPlayerDisconnected(playerId: string): { gameId: string; color: string } | null {
+        // Find active game for this player
+        for (const [gameId, game] of this.games.entries()) {
+            if (game.status !== 'active') continue;
+            if (game.isBot) continue; // Don't track bot games
+
+            let color: 'w' | 'b' | null = null;
+            if (game.players.w === playerId) color = 'w';
+            else if (game.players.b === playerId) color = 'b';
+
+            if (color) {
+                // DON'T clear the timer - let it continue running
+                // If disconnected player times out, they lose on time
+                // The 60-second disconnection grace period is separate from game time
+
+                this.disconnectedPlayers.set(playerId, {
+                    playerId,
+                    gameId,
+                    color,
+                    disconnectedAt: Date.now()
+                });
+
+                console.log(`[GameManager] Player ${playerId} disconnected from game ${gameId} (${color}). Timer continues.`);
+
+                if (this.onPlayerDisconnected) {
+                    this.onPlayerDisconnected(gameId, playerId, color);
+                }
+
+                return { gameId, color };
+            }
+        }
+        return null;
+    }
+
+    rejoinGame(playerId: string, userId?: string): {
+        success: boolean;
+        gameId?: string;
+        color?: string;
+        fen?: string;
+        timeRemaining?: { w: number; b: number };
+        history?: string[];
+        whitePlayerName?: string;
+        blackPlayerName?: string;
+        opponentDisconnected?: boolean;
+    } | null {
+        // Check if player was disconnected
+        const disconnectedInfo = this.disconnectedPlayers.get(playerId);
+
+        if (disconnectedInfo) {
+            // Player is reconnecting to their game
+            const game = this.games.get(disconnectedInfo.gameId);
+            if (game && game.status === 'active') {
+                this.disconnectedPlayers.delete(playerId);
+                console.log(`[GameManager] Player ${playerId} reconnected to game ${disconnectedInfo.gameId}`);
+
+                // Resume the game timer
+                this.resetMoveTimer(disconnectedInfo.gameId);
+
+                if (this.onPlayerReconnected) {
+                    this.onPlayerReconnected(disconnectedInfo.gameId, playerId);
+                }
+
+                // Check if opponent is disconnected
+                const opponentColor = disconnectedInfo.color === 'w' ? 'b' : 'w';
+                const opponentId = game.players[opponentColor];
+                const opponentDisconnected = opponentId ? this.disconnectedPlayers.has(opponentId) : false;
+
+                return {
+                    success: true,
+                    gameId: disconnectedInfo.gameId,
+                    color: disconnectedInfo.color,
+                    fen: game.fen,
+                    timeRemaining: game.timeRemaining,
+                    history: game.history,
+                    opponentDisconnected
+                };
+            }
+        }
+
+        // Also check if player has an active game they're still part of
+        for (const [gameId, game] of this.games.entries()) {
+            if (game.status !== 'active') continue;
+
+            let color: 'w' | 'b' | null = null;
+            if (game.players.w === playerId) color = 'w';
+            else if (game.players.b === playerId) color = 'b';
+
+            if (color) {
+                const opponentColor = color === 'w' ? 'b' : 'w';
+                const opponentId = game.players[opponentColor];
+                const opponentDisconnected = opponentId ? this.disconnectedPlayers.has(opponentId) : false;
+
+                return {
+                    success: true,
+                    gameId,
+                    color,
+                    fen: game.fen,
+                    timeRemaining: game.timeRemaining,
+                    history: game.history,
+                    opponentDisconnected
+                };
+            }
+        }
+
+        return null;
+    }
+
+    cleanupDisconnectedPlayers(): Array<{ gameId: string; forfeitPlayerId: string; winner: string }> {
+        const now = Date.now();
+        const forfeits: Array<{ gameId: string; forfeitPlayerId: string; winner: string }> = [];
+
+        for (const [playerId, info] of this.disconnectedPlayers.entries()) {
+            if (now - info.disconnectedAt > this.disconnectionTimeout) {
+                const game = this.games.get(info.gameId);
+                if (game && game.status === 'active') {
+                    const winner = info.color === 'w' ? 'b' : 'w';
+                    console.log(`[GameManager] Player ${playerId} forfeit due to disconnection timeout in game ${info.gameId}`);
+
+                    forfeits.push({
+                        gameId: info.gameId,
+                        forfeitPlayerId: playerId,
+                        winner
+                    });
+
+                    // Handle game over
+                    this.handleGameOver(info.gameId, winner, 'disconnection');
+                }
+                this.disconnectedPlayers.delete(playerId);
+            }
+        }
+
+        return forfeits;
+    }
+
+    getActiveGameForPlayer(playerId: string): string | null {
+        for (const [gameId, game] of this.games.entries()) {
+            if (game.status !== 'active') continue;
+            if (game.players.w === playerId || game.players.b === playerId) {
+                return gameId;
+            }
+        }
+        return null;
+    }
+
+    isPlayerDisconnected(playerId: string): boolean {
+        return this.disconnectedPlayers.has(playerId);
+    }
+
+    getDisconnectedInfo(playerId: string): DisconnectedPlayer | undefined {
+        return this.disconnectedPlayers.get(playerId);
     }
 
     createGame(playerId: string, durationMinutes: number = 10, randomizeColor: boolean = false, isPrivate: boolean = false, isBot: boolean = false, botDifficulty: number = 1, userId?: string): string {
@@ -589,6 +760,42 @@ export class GameManager {
             }
         }
         return false;
+    }
+
+    // Cleanup games that have been inactive for too long
+    cleanupAbandonedGames(): number {
+        const now = Date.now();
+        const oneHourAgo = now - (60 * 60 * 1000); // 1 hour
+        let cleanedCount = 0;
+
+        for (const [gameId, game] of this.games.entries()) {
+            // Skip finished games
+            if (game.status === 'finished') continue;
+
+            // Check if game is stale (no activity for 1 hour)
+            if (game.lastMoveTime < oneHourAgo) {
+                console.log(`[GameManager] Cleaning up abandoned game ${gameId}`);
+
+                // Mark as abandoned in DB with proper result
+                Game.findOneAndUpdate(
+                    { gameId },
+                    {
+                        status: 'abandoned',
+                        result: { winner: null, reason: 'abandoned' },
+                        endedAt: new Date(),
+                        updatedAt: new Date()
+                    }
+                ).exec().catch(err => console.error(`[GameManager] Failed to mark game ${gameId} as abandoned:`, err));
+
+                // Clean from memory
+                this.games.delete(gameId);
+                this.chessInstances.delete(gameId);
+                this.clearTimer(gameId);
+                cleanedCount++;
+            }
+        }
+
+        return cleanedCount;
     }
 
     private clearTimer(gameId: string) {
