@@ -529,6 +529,8 @@ class GameProvider with ChangeNotifier {
 
   // Tap-to-move methods
   void selectSquare(String square) {
+    debugPrint('[Tap] selectSquare: $square');
+
     // Get the chess instance for validation
     chess_lib.Chess? chess;
     if (_isOfflineGame && _offlineChess != null) {
@@ -539,34 +541,45 @@ class GameProvider with ChangeNotifier {
       chess = chess_lib.Chess.fromFEN(fen);
     }
 
-    if (chess == null) return;
+    if (chess == null) {
+      debugPrint('[Tap] No chess instance available');
+      return;
+    }
 
     // Check if it's the player's turn
     final currentTurnColor = chess.turn == chess_lib.Color.WHITE ? 'w' : 'b';
-    if (currentTurnColor != _playerColor) return;
+    debugPrint('[Tap] Current turn: $currentTurnColor, Player color: $_playerColor');
+    if (currentTurnColor != _playerColor) {
+      debugPrint('[Tap] Not player turn, ignoring tap');
+      return;
+    }
+
+    // If we have a selected square and tapped on a legal move destination
+    if (_selectedSquare != null && _legalMoves.contains(square)) {
+      debugPrint('[Tap] Tapped on legal move destination, making move $_selectedSquare -> $square');
+      _makeTapMove(_selectedSquare!, square);
+      return;
+    }
 
     // Check if the square has a piece of the current player
     final piece = chess.get(square);
     if (piece != null) {
       final pieceColor = piece.color == chess_lib.Color.WHITE ? 'w' : 'b';
+      debugPrint('[Tap] Square has piece: ${piece.type}, color: $pieceColor');
       if (pieceColor == _playerColor) {
         // Select this square and calculate legal moves
         _selectedSquare = square;
         final (moves, captures) = _calculateLegalMoves(chess, square);
         _legalMoves = moves;
         _captureMoves = captures;
+        debugPrint('[Tap] Selected $square with ${moves.length} legal moves');
         notifyListeners();
         return;
       }
     }
 
-    // If we have a selected square and tapped on a legal move destination
-    if (_selectedSquare != null && _legalMoves.contains(square)) {
-      _makeTapMove(_selectedSquare!, square);
-      return;
-    }
-
     // Clear selection if tapped on empty or opponent's piece
+    debugPrint('[Tap] Clearing selection');
     clearSelection();
   }
 
@@ -591,23 +604,34 @@ class GameProvider with ChangeNotifier {
     _selectedSquare = null;
     _legalMoves = [];
     _captureMoves = [];
-    _captureMoves = [];
     notifyListeners();
   }
 
-  void _makeTapMove(String from, String to) {
+  Future<void> _makeTapMove(String from, String to) async {
+    debugPrint('[Tap] _makeTapMove: $from -> $to');
     // Clear selection first
     final fromSquare = from;
     final toSquare = to;
     clearSelection();
 
     // Make the move using the existing controller
-    // The ChessBoard widget handles promotion dialogs automatically
     try {
+      debugPrint('[Tap] Calling controller.makeMove');
       controller.makeMove(from: fromSquare, to: toSquare);
-      // The onMove callback in GameScreen will handle sending to server
-    } catch (e) {
-      debugPrint('Error making tap move: $e');
+      debugPrint('[Tap] controller.makeMove completed');
+
+      // IMPORTANT: controller.makeMove() does NOT trigger the onMove callback
+      // We need to manually handle the move for both online and offline games
+      if (_isOfflineGame) {
+        debugPrint('[Tap] Triggering bot move for offline game');
+        await onUserMoveOffline(fromSquare, toSquare);
+      } else {
+        debugPrint('[Tap] Sending move to server for online game');
+        onUserMove(fromSquare, toSquare);
+      }
+    } catch (e, stackTrace) {
+      debugPrint('[Tap] Error making tap move: $e');
+      debugPrint('[Tap] Stack: $stackTrace');
     }
   }
 
@@ -796,8 +820,9 @@ class GameProvider with ChangeNotifier {
   }
 
   Future<void> onUserMoveOffline(String from, String to, {String? promotion}) async {
-    debugPrint('[Bot] onUserMoveOffline called: $from -> $to, promotion: $promotion');
-    debugPrint('[Bot] isOfflineGame: $_isOfflineGame, offlineChess: ${_offlineChess != null}, currentTurn: $_currentTurn, playerColor: $_playerColor');
+    debugPrint('[Bot] ========== onUserMoveOffline START ==========');
+    debugPrint('[Bot] Move: $from -> $to, promotion: $promotion');
+    debugPrint('[Bot] State: isOfflineGame=$_isOfflineGame, offlineChess=${_offlineChess != null}, currentTurn=$_currentTurn, playerColor=$_playerColor');
 
     // Clear selection
     _selectedSquare = null;
@@ -805,7 +830,7 @@ class GameProvider with ChangeNotifier {
     _captureMoves = [];
 
     if (!_isOfflineGame || _offlineChess == null) {
-      debugPrint('[Bot] Move rejected - not in offline game');
+      debugPrint('[Bot] Move rejected - not in offline game or no chess instance');
       return;
     }
 
@@ -813,21 +838,30 @@ class GameProvider with ChangeNotifier {
       // Sync _offlineChess with the controller's state
       // The ChessBoard widget already made the move on its internal engine
       final currentFen = controller.getFen();
-      debugPrint('[Bot] Controller FEN after move: $currentFen');
+      debugPrint('[Bot] Controller FEN after user move: $currentFen');
 
       // Update our offline chess instance to match the controller
       _offlineChess = chess_lib.Chess.fromFEN(currentFen);
       _currentTurn = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
 
-      debugPrint('[Bot] Synced _offlineChess, currentTurn: $_currentTurn');
+      debugPrint('[Bot] Synced _offlineChess from controller');
+      debugPrint('[Bot] _offlineChess FEN: ${_offlineChess!.fen}');
+      debugPrint('[Bot] Current turn is now: $_currentTurn (should be bot turn)');
       notifyListeners();
 
       // Check for game over
-      if (_checkGameOver()) return;
+      if (_checkGameOver()) {
+        debugPrint('[Bot] Game is over, not making bot move');
+        return;
+      }
 
-      // Bot's turn
+      // Bot's turn - call it
+      debugPrint('[Bot] About to call _makeBotMove...');
       await _makeBotMove();
-    } catch (e) {
+      debugPrint('[Bot] ========== onUserMoveOffline END ==========');
+    } catch (e, stackTrace) {
+      debugPrint('[Bot] ERROR in onUserMoveOffline: $e');
+      debugPrint('[Bot] Stack: $stackTrace');
       _errorMessage = ErrorService.getUserFriendlyMessage('invalid move $e');
       notifyListeners();
     }
@@ -836,9 +870,20 @@ class GameProvider with ChangeNotifier {
   Future<void> _makeBotMove() async {
     debugPrint('[Bot] _makeBotMove called');
     debugPrint('[Bot] isOfflineGame: $_isOfflineGame, difficulty: $_currentBotDifficulty, chess: ${_offlineChess != null}');
+    debugPrint('[Bot] localBot isInitialized: ${_localBot.isInitialized}, isThinking: ${_localBot.isThinking}');
 
     if (!_isOfflineGame || _currentBotDifficulty == null || _offlineChess == null) {
       debugPrint('[Bot] _makeBotMove aborted - conditions not met');
+      return;
+    }
+
+    // Check if it's actually the bot's turn
+    final botColor = _playerColor == 'w' ? 'b' : 'w';
+    final currentTurnColor = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+    debugPrint('[Bot] Bot color: $botColor, Current turn: $currentTurnColor');
+
+    if (currentTurnColor != botColor) {
+      debugPrint('[Bot] Not bot turn, skipping');
       return;
     }
 
@@ -849,6 +894,7 @@ class GameProvider with ChangeNotifier {
       await Future.delayed(const Duration(milliseconds: 500));
 
       final fen = _offlineChess!.fen;
+      debugPrint('[Bot] Calling getBestMove with FEN: $fen');
       final bestMove = await _localBot.getBestMove(fen, _currentBotDifficulty!);
       debugPrint('[Bot] Best move calculated: $bestMove');
 
@@ -860,22 +906,25 @@ class GameProvider with ChangeNotifier {
       debugPrint('[Bot] Making move: $from -> $to, promotion: $promotion');
 
       // Make bot move
-      _offlineChess!.move({
+      final moveResult = _offlineChess!.move({
         'from': from,
         'to': to,
         if (promotion != null) 'promotion': promotion,
       });
+      debugPrint('[Bot] Move result: $moveResult');
 
       debugPrint('[Bot] Move made, new FEN: ${_offlineChess!.fen}');
 
       // Update controller display
       controller.loadFen(_offlineChess!.fen);
+      debugPrint('[Bot] Controller FEN updated');
 
       _currentTurn = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
-      debugPrint('[Bot] Turn updated to: $_currentTurn');
+      debugPrint('[Bot] Turn updated to: $_currentTurn, player can now move');
       notifyListeners();
 
       _checkGameOver();
+      debugPrint('[Bot] _makeBotMove completed successfully');
     } catch (e, stackTrace) {
       debugPrint('[Bot] Error in _makeBotMove: $e');
       debugPrint('[Bot] Stack: $stackTrace');

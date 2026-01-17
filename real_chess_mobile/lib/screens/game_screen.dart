@@ -78,6 +78,39 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     super.dispose();
   }
 
+  void _handleMoveCallback(GameProvider game) {
+    try {
+      final gameState = game.controller.game;
+      final history = gameState.history;
+      debugPrint('[GameScreen] History length: ${history.length}');
+
+      if (history.isNotEmpty) {
+        final lastMove = history.last;
+        final from = lastMove.move.fromAlgebraic;
+        final to = lastMove.move.toAlgebraic;
+        final promotion = lastMove.move.promotion?.name;
+        debugPrint('[GameScreen] Move detected: $from -> $to, promotion: $promotion');
+
+        if (game.isOfflineGame) {
+          debugPrint('[GameScreen] Calling onUserMoveOffline');
+          // Call async method and handle errors
+          game.onUserMoveOffline(from, to, promotion: promotion).catchError((e, stackTrace) {
+            debugPrint('[GameScreen] Error in onUserMoveOffline: $e');
+            debugPrint('[GameScreen] Stack trace: $stackTrace');
+          });
+        } else {
+          debugPrint('[GameScreen] Calling onUserMove');
+          game.onUserMove(from, to, promotion: promotion);
+        }
+      } else {
+        debugPrint('[GameScreen] History is empty, cannot detect move');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('[GameScreen] Error detecting move: $e');
+      debugPrint('[GameScreen] Stack trace: $stackTrace');
+    }
+  }
+
   String _formatTime(int milliseconds) {
     if (milliseconds < 0) milliseconds = 0;
     final seconds = (milliseconds / 1000).floor();
@@ -226,28 +259,12 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                                       ? PlayerColor.white
                                       : PlayerColor.black,
                                   onMove: () {
+                                    debugPrint('[GameScreen] onMove callback fired! isOfflineGame: ${game.isOfflineGame}');
                                     // Clear selection after any move
                                     game.clearSelection();
-                                    try {
-                                      final moveHistory = game.controller.getSan();
-                                      if (moveHistory != null && moveHistory.isNotEmpty) {
-                                        final gameState = game.controller.game;
-                                        final history = gameState.history;
-                                        if (history.isNotEmpty) {
-                                          final lastMove = history.last;
-                                          final from = lastMove.move.fromAlgebraic;
-                                          final to = lastMove.move.toAlgebraic;
-                                          final promotion = lastMove.move.promotion?.name;
-                                          if (game.isOfflineGame) {
-                                            game.onUserMoveOffline(from, to, promotion: promotion);
-                                          } else {
-                                            game.onUserMove(from, to, promotion: promotion);
-                                          }
-                                        }
-                                      }
-                                    } catch (e) {
-                                      debugPrint('Error detecting move: $e');
-                                    }
+
+                                    // Use a non-async approach to avoid callback issues
+                                    _handleMoveCallback(game);
                                   },
                                 ),
                                 // Selected square highlight
