@@ -16,9 +16,15 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
   final _passwordController = TextEditingController();
   final _usernameController = TextEditingController();
 
+  // Focus nodes to track which field is focused
+  final _usernameFocus = FocusNode();
+  final _emailFocus = FocusNode();
+  final _passwordFocus = FocusNode();
+
   bool _isLogin = true;
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _shouldHideLogo = false;
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -34,6 +40,18 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
     );
     _animationController.forward();
+
+    // Listen to focus changes - hide logo when any field is focused
+    _usernameFocus.addListener(_updateLogoVisibility);
+    _emailFocus.addListener(_updateLogoVisibility);
+    _passwordFocus.addListener(_updateLogoVisibility);
+  }
+
+  void _updateLogoVisibility() {
+    final shouldHide = _usernameFocus.hasFocus || _emailFocus.hasFocus || _passwordFocus.hasFocus;
+    if (shouldHide != _shouldHideLogo) {
+      setState(() => _shouldHideLogo = shouldHide);
+    }
   }
 
   @override
@@ -41,6 +59,9 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     _emailController.dispose();
     _passwordController.dispose();
     _usernameController.dispose();
+    _usernameFocus.dispose();
+    _emailFocus.dispose();
+    _passwordFocus.dispose();
     _animationController.dispose();
     super.dispose();
   }
@@ -257,9 +278,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
 
   @override
   Widget build(BuildContext context) {
-    // Get keyboard height for proper padding
-    final bottomPadding = MediaQuery.of(context).viewInsets.bottom;
-
     return Scaffold(
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
@@ -274,44 +292,39 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         ],
       ),
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            return SingleChildScrollView(
-              physics: const ClampingScrollPhysics(),
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: EdgeInsets.fromLTRB(24, 0, 24, 24 + bottomPadding),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minHeight: constraints.maxHeight - 24 - bottomPadding,
-                ),
-                child: IntrinsicHeight(
-                  child: Column(
-                    children: [
-                      const Spacer(flex: 1),
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+          child: Column(
+            children: [
+              // Add top spacing only when logo is visible
+              if (!_shouldHideLogo) const SizedBox(height: 40),
 
-                      // Logo/Branding Section
-                      _buildBrandSection(),
-
-                      const SizedBox(height: 40),
-
-                      // Form Card
-                      FadeTransition(
-                        opacity: _fadeAnimation,
-                        child: _buildFormCard(),
-                      ),
-
-                      const SizedBox(height: 24),
-
-                      // Toggle auth mode
-                      _buildAuthToggle(),
-
-                      const Spacer(flex: 2),
-                    ],
-                  ),
-                ),
+              // Logo/Branding Section - hide only when email/password focused
+              AnimatedSize(
+                duration: const Duration(milliseconds: 200),
+                child: _shouldHideLogo
+                    ? const SizedBox(height: 20)
+                    : _buildBrandSection(),
               ),
-            );
-          },
+
+              SizedBox(height: _shouldHideLogo ? 20 : 40),
+
+              // Form Card
+              FadeTransition(
+                opacity: _fadeAnimation,
+                child: _buildFormCard(),
+              ),
+
+              const SizedBox(height: 24),
+
+              // Toggle auth mode
+              _buildAuthToggle(),
+
+              const SizedBox(height: 40),
+            ],
+          ),
         ),
       ),
     );
@@ -394,9 +407,10 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
           // Username Field
           _buildTextField(
             controller: _usernameController,
+            focusNode: _usernameFocus,
             label: 'Username',
             icon: Icons.person_outline,
-            textInputAction: _isLogin ? TextInputAction.next : TextInputAction.next,
+            textInputAction: TextInputAction.next,
           ),
 
           // Email Field (only for signup)
@@ -409,6 +423,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                       const SizedBox(height: 16),
                       _buildTextField(
                         controller: _emailController,
+                        focusNode: _emailFocus,
                         label: 'Email',
                         icon: Icons.email_outlined,
                         keyboardType: TextInputType.emailAddress,
@@ -424,6 +439,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
           // Password Field
           _buildTextField(
             controller: _passwordController,
+            focusNode: _passwordFocus,
             label: 'Password',
             icon: Icons.lock_outline,
             obscureText: _obscurePassword,
@@ -487,6 +503,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     required TextEditingController controller,
     required String label,
     required IconData icon,
+    FocusNode? focusNode,
     bool obscureText = false,
     TextInputType keyboardType = TextInputType.text,
     TextInputAction textInputAction = TextInputAction.next,
@@ -495,6 +512,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
   }) {
     return TextField(
       controller: controller,
+      focusNode: focusNode,
       obscureText: obscureText,
       keyboardType: keyboardType,
       textInputAction: textInputAction,

@@ -127,5 +127,30 @@ class ApiService {
       throw ApiException('Failed to verify session');
     }
   }
+  static Future<Map<String, dynamic>> analyzeGame(String gameId, String token) async {
+    final url = '$baseUrl/api/games/$gameId/analyze';
+    _log('Request: POST $url');
+
+    try {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(const Duration(seconds: 60)); // Analysis takes time
+
+      _log('Response Status: ${response.statusCode}');
+      
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      } else {
+        throw ApiException('Failed to analyze game', statusCode: response.statusCode);
+      }
+    } catch (e) {
+      _log('Error: $e');
+      if (e is ApiException) rethrow;
+      throw ApiException('Analysis request failed');
+    }
+  }
 }
 

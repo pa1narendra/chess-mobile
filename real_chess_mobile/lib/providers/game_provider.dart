@@ -4,9 +4,12 @@ import 'package:flutter_chess_board/flutter_chess_board.dart';
 import 'package:chess/chess.dart' as chess_lib;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../api/socket_service.dart';
+import '../api/api_service.dart';
 import '../services/bot_service.dart';
 import '../services/network_service.dart';
 import '../services/error_service.dart';
+import '../services/audio_service.dart';
+import '../services/vibration_service.dart';
 
 const String _activeGameKey = 'active_game_id';
 const String _playerColorKey = 'player_color';
@@ -18,6 +21,7 @@ class GameProvider with ChangeNotifier {
   // Offline bot services
   final LocalBotService _localBot = LocalBotService();
   final NetworkService _networkService = NetworkService();
+  final AudioService _audioService = AudioService();
 
   String? _gameId;
   String _playerColor = 'w'; // 'w' or 'b'
@@ -58,11 +62,40 @@ class GameProvider with ChangeNotifier {
   // Opponent disconnection state
   bool _opponentDisconnected = false;
   String? _disconnectionMessage;
+  
+  // Analysis state
+  bool _isAnalyzing = false;
+  Map<String, dynamic>? _analysisResults;
+  
+  bool get isAnalyzing => _isAnalyzing;
+  Map<String, dynamic>? get analysisResults => _analysisResults;
 
   // Tap-to-move state
   String? _selectedSquare;
   List<String> _legalMoves = [];
   List<String> _captureMoves = []; // Squares where captures can be made
+
+  // Move history for offline games (since controller.loadFen resets internal history)
+  List<String> _moveHistory = [];
+
+  // FEN history for move replay (stores FEN after each move)
+  List<String> _fenHistory = [];
+  int? _viewingMoveIndex; // null means viewing current position
+
+  // Starting piece counts for calculating captures
+  static const Map<String, int> _startingPieces = {
+    'P': 8, 'N': 2, 'B': 2, 'R': 2, 'Q': 1, 'K': 1, // White
+    'p': 8, 'n': 2, 'b': 2, 'r': 2, 'q': 1, 'k': 1, // Black
+  };
+
+  // Piece values for material calculation
+  static const Map<String, int> _pieceValues = {
+    'p': 1, 'P': 1,
+    'n': 3, 'N': 3,
+    'b': 3, 'B': 3,
+    'r': 5, 'R': 5,
+    'q': 9, 'Q': 9,
+  };
 
   Map<String, int> get timeRemaining => _timeRemaining;
   String get currentTurn => _currentTurn;
@@ -73,6 +106,96 @@ class GameProvider with ChangeNotifier {
   String? get selectedSquare => _selectedSquare;
   List<String> get legalMoves => _legalMoves;
   List<String> get captureMoves => _captureMoves;
+  List<String> get moveHistory => _moveHistory;
+  List<String> get fenHistory => _fenHistory;
+  int? get viewingMoveIndex => _viewingMoveIndex;
+  bool get isViewingHistory => _viewingMoveIndex != null;
+
+  // Get captured pieces for each side (pieces that were captured BY the opponent)
+  Map<String, List<String>> get capturedPieces {
+    final fen = _getCurrentFen();
+    final board = fen.split(' ')[0];
+
+    // Count current pieces on board
+    final currentPieces = <String, int>{};
+    for (final char in board.split('')) {
+      if (_startingPieces.containsKey(char)) {
+        currentPieces[char] = (currentPieces[char] ?? 0) + 1;
+      }
+    }
+
+    // Calculate captured pieces
+    final whiteCaptured = <String>[]; // Black pieces captured by white
+    final blackCaptured = <String>[]; // White pieces captured by black
+
+    for (final entry in _startingPieces.entries) {
+      final piece = entry.key;
+      final startCount = entry.value;
+      final currentCount = currentPieces[piece] ?? 0;
+      final captured = startCount - currentCount;
+
+      for (int i = 0; i < captured; i++) {
+        if (piece.toUpperCase() == piece) {
+          // White piece captured by black
+          blackCaptured.add(piece.toLowerCase());
+        } else {
+          // Black piece captured by white
+          whiteCaptured.add(piece);
+        }
+      }
+    }
+
+    // Sort by value (pawns first, then minor, then major)
+    final order = ['p', 'n', 'b', 'r', 'q'];
+    whiteCaptured.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    blackCaptured.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+
+    return {'white': whiteCaptured, 'black': blackCaptured};
+  }
+
+  // Get material advantage (positive = white ahead, negative = black ahead)
+  int get materialAdvantage {
+    final captured = capturedPieces;
+    int whiteScore = 0;
+    int blackScore = 0;
+
+    for (final piece in captured['white']!) {
+      whiteScore += _pieceValues[piece] ?? 0;
+    }
+    for (final piece in captured['black']!) {
+      blackScore += _pieceValues[piece] ?? 0;
+    }
+
+    return whiteScore - blackScore;
+  }
+
+  String _getCurrentFen() {
+    if (_isOfflineGame && _offlineChess != null) {
+      return _offlineChess!.fen;
+    }
+    return controller.getFen();
+  }
+
+  // View a specific move in history
+  void viewMove(int moveIndex) {
+    if (moveIndex < 0 || moveIndex >= _fenHistory.length) return;
+    if (_viewingMoveIndex == moveIndex) return; // Already viewing this move
+
+    debugPrint('[History] Viewing move $moveIndex, fenHistory length: ${_fenHistory.length}');
+    _viewingMoveIndex = moveIndex;
+    controller.loadFen(_fenHistory[moveIndex]);
+    notifyListeners();
+  }
+
+  // Return to current position
+  void viewCurrentPosition() {
+    _viewingMoveIndex = null;
+    final currentFen = _isOfflineGame && _offlineChess != null
+        ? _offlineChess!.fen
+        : (_fenHistory.isNotEmpty ? _fenHistory.last : 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+    controller.loadFen(currentFen);
+    notifyListeners();
+  }
 
   GameProvider() {
     // No longer using controller listener - using onMove callback instead
@@ -248,7 +371,12 @@ class GameProvider with ChangeNotifier {
           final fenParts = fen.split(' ');
           if (fenParts.length > 1) {
             _currentTurn = fenParts[1];
+            _currentTurn = fenParts[1];
           }
+          
+          // Play move sound/haptics
+          _audioService.playMove();
+          VibrationService.light();
         }
         // Update time remaining
         final timeData = msg['timeRemaining'];
@@ -270,6 +398,10 @@ class GameProvider with ChangeNotifier {
         _disconnectionMessage = null;
         // Clear saved game since it's over
         _clearActiveGame();
+        
+        _audioService.playGameOver();
+        VibrationService.heavy();
+        
         notifyListeners();
         break;
 
@@ -649,11 +781,32 @@ class GameProvider with ChangeNotifier {
 
     // Handle online game resignation
     if (_socket == null || !_isInGame || _gameId == null) return;
+
+    // CRITICAL: Stop timer immediately on client side
+    _stopLocalTimer();
+
+    // CRITICAL: Set game status immediately so UI updates
+    _gameStatus = 'Game Over: You resigned';
+
+    // CRITICAL: Mark as not in game to prevent rejoin
+    _isInGame = false;
+
+    // CRITICAL: Clear saved game from persistent storage
+    _clearActiveGame();
+
+    // Clear selection state
+    _selectedSquare = null;
+    _legalMoves = [];
+    _captureMoves = [];
+
+    // Send resignation to server (server will notify opponent)
     _socket!.send({
       'type': 'RESIGN',
       'gameId': _gameId,
       'token': _token
     });
+
+    notifyListeners();
   }
 
   void offerDraw() {
@@ -770,6 +923,24 @@ class GameProvider with ChangeNotifier {
     _gameTimer = null;
   }
 
+  Future<void> analyzeGame() async {
+    if (_gameId == null || _token == null) return;
+    
+    _isAnalyzing = true;
+    _analysisResults = null;
+    notifyListeners();
+    
+    try {
+      _analysisResults = await ApiService.analyzeGame(_gameId!, _token!);
+    } catch (e) {
+      debugPrint('[GameProvider] Analysis failed: $e');
+      _errorMessage = 'Analysis failed: $e';
+    } finally {
+      _isAnalyzing = false;
+      notifyListeners();
+    }
+  }
+
   void disconnectSocket() {
     _socket?.disconnect();
     _stopLocalTimer();
@@ -800,6 +971,12 @@ class GameProvider with ChangeNotifier {
 
       // Reset board
       controller.resetBoard();
+
+      // Reset move history for new game
+      _moveHistory = [];
+      // Reset FEN history and add starting position
+      _fenHistory = [_offlineChess!.fen];
+      _viewingMoveIndex = null;
 
       // Bot games are untimed - set time to -1 to indicate no timer
       _timeRemaining = {'w': -1, 'b': -1};
@@ -835,6 +1012,35 @@ class GameProvider with ChangeNotifier {
     }
 
     try {
+      // Record the user's move BEFORE syncing (controller has the move in history)
+      bool isCapture = false;
+      try {
+        final history = controller.game.getHistory();
+        if (history.isNotEmpty) {
+          final san = history.last;
+          _moveHistory.add(san);
+          // Check if it's a capture (SAN contains 'x')
+          isCapture = san.toString().contains('x');
+          debugPrint('[Bot] Recorded user move: $san, history: $_moveHistory');
+        } else {
+          // Fallback if history is empty for some reason
+           _moveHistory.add('$from$to${promotion ?? ''}');
+        }
+      } catch (e) {
+        // Fallback: just record coordinate notation
+        _moveHistory.add('$from$to${promotion ?? ''}');
+        debugPrint('[Bot] Recorded user move (fallback): $from$to');
+      }
+
+      // Play sound for user's move
+      if (isCapture) {
+        _audioService.playCapture();
+        VibrationService.medium();
+      } else {
+        _audioService.playMove();
+        VibrationService.light();
+      }
+
       // Sync _offlineChess with the controller's state
       // The ChessBoard widget already made the move on its internal engine
       final currentFen = controller.getFen();
@@ -842,7 +1048,16 @@ class GameProvider with ChangeNotifier {
 
       // Update our offline chess instance to match the controller
       _offlineChess = chess_lib.Chess.fromFEN(currentFen);
+
+      // Record FEN for move replay
+      _fenHistory.add(currentFen);
       _currentTurn = _offlineChess!.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+
+      // Check if user's move put opponent in check
+      if (_offlineChess!.in_check) {
+        _audioService.playCheck();
+        VibrationService.medium();
+      }
 
       debugPrint('[Bot] Synced _offlineChess from controller');
       debugPrint('[Bot] _offlineChess FEN: ${_offlineChess!.fen}');
@@ -913,6 +1128,46 @@ class GameProvider with ChangeNotifier {
       });
       debugPrint('[Bot] Move result: $moveResult');
 
+      // Record the bot's move
+      if (moveResult) {
+        // Get SAN notation from the history (chess.dart records moves with SAN)
+        String san;
+        try {
+          final history = _offlineChess!.getHistory({'verbose': true});
+          if (history.isNotEmpty) {
+            final lastMove = history.last;
+            san = lastMove['san'] ?? '$from$to${promotion ?? ''}';
+          } else {
+            san = '$from$to${promotion ?? ''}';
+          }
+        } catch (e) {
+          san = '$from$to${promotion ?? ''}';
+        }
+
+        // Check for capture (SAN contains 'x')
+        final isCapture = san.contains('x');
+
+        // Play sounds
+        if (isCapture) {
+          _audioService.playCapture();
+          VibrationService.medium();
+        } else {
+          _audioService.playMove();
+          VibrationService.light();
+        }
+
+        // Check for check/checkmate
+        if (_offlineChess!.in_check) {
+          _audioService.playCheck();
+          VibrationService.medium();
+        }
+
+        _moveHistory.add(san);
+        // Record FEN for move replay
+        _fenHistory.add(_offlineChess!.fen);
+        debugPrint('[Bot] Recorded bot move: $san, history: $_moveHistory');
+      }
+
       debugPrint('[Bot] Move made, new FEN: ${_offlineChess!.fen}');
 
       // Update controller display
@@ -949,6 +1204,10 @@ class GameProvider with ChangeNotifier {
       } else if (_offlineChess!.in_threefold_repetition) {
         _gameStatus = 'Game Over: Draw - Threefold repetition';
       }
+
+      // Play game over sound
+      _audioService.playGameOver();
+      VibrationService.heavy();
 
       _stopLocalTimer();
       notifyListeners();

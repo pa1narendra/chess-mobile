@@ -220,10 +220,36 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                 if (game.gameStatus != null)
                   _buildStatusBanner(game),
 
+                // Analysis button
+                if (game.gameStatus != null && 
+                    game.gameStatus!.startsWith('Game Over') && 
+                    !game.isOfflineGame && 
+                    game.gameId != null &&
+                    game.analysisResults == null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: ElevatedButton.icon(
+                      onPressed: game.isAnalyzing ? null : () => game.analyzeGame(),
+                      icon: game.isAnalyzing 
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) 
+                        : const Icon(Icons.analytics_outlined),
+                      label: Text(game.isAnalyzing ? 'Analyzing...' : 'Analyze Game'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.electricBlue,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 48),
+                      ),
+                    ),
+                  ),
+
+                // Analysis Results
+                if (game.analysisResults != null)
+                   _buildAnalysisResults(game),
+
                 // Move history display
                 _buildMoveHistory(game),
 
-                // Opponent info
+                // Opponent info (shows pieces opponent has captured)
                 _buildPlayerBar(
                   context,
                   game.playerColor == 'w' ? game.blackPlayerName : game.whitePlayerName,
@@ -231,6 +257,13 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   isCurrentTurn: game.currentTurn != game.playerColor,
                   isOpponent: true,
                   isWhite: game.playerColor != 'w',
+                  // Opponent captured player's pieces
+                  capturedPieces: game.playerColor == 'w'
+                      ? game.capturedPieces['black']!  // Black captured white pieces
+                      : game.capturedPieces['white']!, // White captured black pieces
+                  materialAdvantage: game.playerColor == 'w'
+                      ? -game.materialAdvantage  // Invert for black's perspective
+                      : game.materialAdvantage,
                 ),
 
                 // Chess Board with tap-to-move overlay
@@ -250,23 +283,42 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                             height: boardSize,
                             child: Stack(
                               children: [
-                                // Chess Board
-                                ChessBoard(
-                                  controller: game.controller,
-                                  enableUserMoves: game.currentTurn == game.playerColor,
-                                  boardColor: BoardColor.brown,
-                                  boardOrientation: game.playerColor == 'w'
-                                      ? PlayerColor.white
-                                      : PlayerColor.black,
-                                  onMove: () {
-                                    debugPrint('[GameScreen] onMove callback fired! isOfflineGame: ${game.isOfflineGame}');
-                                    // Clear selection after any move
-                                    game.clearSelection();
+                                // Chess Board - base layer
+                                // Chess Board - wrapped with gesture detector for tap-to-move
+                                // We wrap the board instead of overlaying to ensure drag events work
+                                GestureDetector(
+                                  // Only enable tap detection when it's user's turn and not viewing history
+                                  onTapUp: (game.currentTurn == game.playerColor && !game.isViewingHistory) ? (details) {
+                                    final localPosition = details.localPosition;
+                                    final col = (localPosition.dx / squareSize).floor();
+                                    final row = (localPosition.dy / squareSize).floor();
 
-                                    // Use a non-async approach to avoid callback issues
-                                    _handleMoveCallback(game);
-                                  },
+                                    // Ensure within bounds
+                                    if (col >= 0 && col <= 7 && row >= 0 && row <= 7) {
+                                      final square = _coordsToSquare(col, row, game.playerColor == 'w');
+                                      debugPrint('[Tap] GestureDetector onTapUp: $square');
+                                      game.selectSquare(square);
+                                    }
+                                  } : null,
+                                  child: ChessBoard(
+                                    controller: game.controller,
+                                    enableUserMoves: game.currentTurn == game.playerColor && !game.isViewingHistory,
+                                    boardColor: BoardColor.brown,
+                                    boardOrientation: game.playerColor == 'w'
+                                        ? PlayerColor.white
+                                        : PlayerColor.black,
+                                    onMove: () {
+                                      debugPrint('[GameScreen] onMove callback fired! isOfflineGame: ${game.isOfflineGame}');
+                                      // Clear selection after any move
+                                      game.clearSelection();
+
+                                      // Use a non-async approach to avoid callback issues
+                                      _handleMoveCallback(game);
+                                    },
+                                  ),
                                 ),
+
+                                // Visual highlights (IgnorePointer) - display only
                                 // Selected square highlight
                                 if (game.selectedSquare != null)
                                   _buildSquareHighlight(
@@ -282,9 +334,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                                   game.playerColor == 'w',
                                   isCapture: game.captureMoves.contains(square),
                                 )),
-                                // Tap detection overlay
-                                if (game.currentTurn == game.playerColor)
-                                  _buildTapOverlay(squareSize, game.playerColor == 'w', game),
+
+                                // Tap detection overlay removed - wrapped board instead
                               ],
                             ),
                           );
@@ -294,7 +345,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   ),
                 ),
 
-                // Player info
+                // Player info (shows pieces player has captured)
                 _buildPlayerBar(
                   context,
                   game.playerColor == 'w' ? game.whitePlayerName : game.blackPlayerName,
@@ -302,6 +353,13 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   isCurrentTurn: game.currentTurn == game.playerColor,
                   isOpponent: false,
                   isWhite: game.playerColor == 'w',
+                  // Player captured opponent's pieces
+                  capturedPieces: game.playerColor == 'w'
+                      ? game.capturedPieces['white']!  // White captured black pieces
+                      : game.capturedPieces['black']!, // Black captured white pieces
+                  materialAdvantage: game.playerColor == 'w'
+                      ? game.materialAdvantage
+                      : -game.materialAdvantage,
                 ),
 
                 const SizedBox(height: 8),
@@ -508,7 +566,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildPlayerBar(BuildContext context, String name, int timeMs,
-      {required bool isCurrentTurn, required bool isOpponent, required bool isWhite}) {
+      {required bool isCurrentTurn, required bool isOpponent, required bool isWhite,
+       List<String> capturedPieces = const [], int materialAdvantage = 0}) {
     final isUntimed = timeMs < 0;
     final isLowTime = !isUntimed && timeMs < 30000;
 
@@ -516,6 +575,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: isCurrentTurn
             ? AppColors.tealAccent.withOpacity(0.1)
@@ -559,21 +619,58 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           ),
           const SizedBox(width: 12),
 
-          // Name and turn indicator
+          // Name, captured pieces, and turn indicator
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  name,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: isCurrentTurn ? FontWeight.bold : FontWeight.w500,
-                    color: AppColors.textPrimary,
-                  ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        name,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: isCurrentTurn ? FontWeight.bold : FontWeight.w500,
+                          color: AppColors.textPrimary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                    // Material advantage
+                    if (materialAdvantage != 0)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: Text(
+                          materialAdvantage > 0 ? '+$materialAdvantage' : '$materialAdvantage',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: materialAdvantage > 0 ? AppColors.emeraldGreen : AppColors.roseError,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                if (isCurrentTurn)
+                // Captured pieces display
+                if (capturedPieces.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      capturedPieces.map((piece) => _getPieceSymbol(piece)).join(''),
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textMuted,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  )
+                else if (isCurrentTurn)
                   Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Container(
                         width: 6,
@@ -597,6 +694,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
               ],
             ),
           ),
+          const SizedBox(width: 8),
 
           // Timer or Untimed indicator
           if (isUntimed)
@@ -655,6 +753,19 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         ],
       ),
     );
+  }
+
+  // Helper to convert piece letter to Unicode symbol
+  String _getPieceSymbol(String piece) {
+    switch (piece.toLowerCase()) {
+      case 'p': return '♟';
+      case 'n': return '♞';
+      case 'b': return '♝';
+      case 'r': return '♜';
+      case 'q': return '♛';
+      case 'k': return '♚';
+      default: return piece;
+    }
   }
 
   Widget _buildConnectionIndicator(SocketConnectionState state) {
@@ -842,15 +953,22 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildMoveHistory(GameProvider game) {
-    // Get move history from the controller
+    // Get move history
     List<String> moves = [];
-    try {
-      final sanMoves = game.controller.getSan();
-      if (sanMoves != null && sanMoves.isNotEmpty) {
-        moves = List<String>.from(sanMoves);
+
+    if (game.isOfflineGame) {
+      // For offline games, use the maintained history (controller.loadFen resets internal history)
+      moves = game.moveHistory;
+    } else {
+      // For online games, use controller.getSan()
+      try {
+        final sanMoves = game.controller.getSan();
+        if (sanMoves != null && sanMoves.isNotEmpty) {
+          moves = List<String>.from(sanMoves);
+        }
+      } catch (e) {
+        debugPrint('Error getting move history: $e');
       }
-    } catch (e) {
-      debugPrint('Error getting move history: $e');
     }
 
     if (moves.isEmpty) {
@@ -875,6 +993,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       );
     }
 
+    final isViewingHistory = game.isViewingHistory;
+    final viewingIndex = game.viewingMoveIndex;
+
     // Format moves as pairs (1. e4 e5 2. Nf3 Nc6 ...)
     final formattedMoves = <Widget>[];
     for (int i = 0; i < moves.length; i++) {
@@ -896,24 +1017,81 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         );
       }
 
-      final isLastMove = i == moves.length - 1;
+      final isLastMove = i == moves.length - 1 && !isViewingHistory;
+      final isViewingThisMove = isViewingHistory && viewingIndex == i + 1; // +1 because fenHistory[0] is starting position
+      final moveIndex = i;
+
       formattedMoves.add(
-        Container(
-          margin: EdgeInsets.only(right: i % 2 == 0 ? 2 : 8),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-          decoration: isLastMove
-              ? BoxDecoration(
-                  color: AppColors.tealAccent.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: AppColors.tealAccent.withOpacity(0.5)),
-                )
-              : null,
-          child: Text(
-            moves[i],
-            style: TextStyle(
-              color: isLastMove ? AppColors.tealAccent : AppColors.textPrimary,
-              fontSize: 12,
-              fontWeight: isLastMove ? FontWeight.w600 : FontWeight.w400,
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            // FEN history: index 0 is start position, index 1 is after move 0, etc.
+            // So to view position after move i, we use fenHistory[i+1]
+            debugPrint('[MoveHistory] Tapped move $moveIndex, fenHistory: ${game.fenHistory.length}');
+            if (game.fenHistory.length > moveIndex + 1) {
+              game.viewMove(moveIndex + 1);
+            }
+          },
+          child: Container(
+            margin: EdgeInsets.only(right: i % 2 == 0 ? 2 : 8),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: isViewingThisMove
+                ? BoxDecoration(
+                    color: AppColors.purpleAccent.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: AppColors.purpleAccent),
+                  )
+                : isLastMove
+                    ? BoxDecoration(
+                        color: AppColors.tealAccent.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: AppColors.tealAccent.withOpacity(0.5)),
+                      )
+                    : null,
+            child: Text(
+              moves[i],
+              style: TextStyle(
+                color: isViewingThisMove
+                    ? AppColors.purpleAccent
+                    : isLastMove
+                        ? AppColors.tealAccent
+                        : AppColors.textPrimary,
+                fontSize: 12,
+                fontWeight: (isLastMove || isViewingThisMove) ? FontWeight.w600 : FontWeight.w400,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Add "back to current" button when viewing history
+    if (isViewingHistory) {
+      formattedMoves.add(
+        GestureDetector(
+          onTap: () => game.viewCurrentPosition(),
+          child: Container(
+            margin: const EdgeInsets.only(left: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: AppColors.tealAccent.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: AppColors.tealAccent),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.skip_next_rounded, size: 14, color: AppColors.tealAccent),
+                const SizedBox(width: 2),
+                Text(
+                  'Live',
+                  style: TextStyle(
+                    color: AppColors.tealAccent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -923,57 +1101,232 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     return Container(
       height: 40,
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
-        color: AppColors.surfaceDark,
+        color: isViewingHistory
+            ? AppColors.purpleAccent.withOpacity(0.1)
+            : AppColors.surfaceDark,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.borderColor),
+        border: Border.all(
+          color: isViewingHistory ? AppColors.purpleAccent : AppColors.borderColor,
+        ),
       ),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        reverse: true, // Scroll to show latest moves
+        reverse: !isViewingHistory, // Only auto-scroll to end if not viewing history
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: formattedMoves,
         ),
       ),
     );
   }
 
-  Offset? _pointerDownPosition;
-
   Widget _buildTapOverlay(double squareSize, bool isWhiteOrientation, GameProvider game) {
-    // Use Listener instead of GestureDetector to avoid blocking drag-and-drop
-    // Listener passively receives events without competing in the gesture arena
-    return Listener(
+    // Use GestureDetector with only onTapUp - this will LOSE to drag gestures
+    // in the gesture arena, allowing ChessBoard's drag-and-drop to work
+    return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      onPointerDown: (event) {
-        _pointerDownPosition = event.localPosition;
-      },
-      onPointerUp: (event) {
-        if (_pointerDownPosition == null) return;
+      onTapUp: (details) {
+        // This only fires if no drag occurred (tap recognizer loses to drag recognizer)
+        final localPosition = details.localPosition;
+        final col = (localPosition.dx / squareSize).floor();
+        final row = (localPosition.dy / squareSize).floor();
 
-        // Check if this was a tap (pointer didn't move much) vs a drag
-        final distance = (event.localPosition - _pointerDownPosition!).distance;
-        if (distance < 10) {
-          // This is a tap - handle square selection
-          final localPosition = event.localPosition;
-          final col = (localPosition.dx / squareSize).floor();
-          final row = (localPosition.dy / squareSize).floor();
-
-          // Ensure within bounds
-          if (col >= 0 && col <= 7 && row >= 0 && row <= 7) {
-            final square = _coordsToSquare(col, row, isWhiteOrientation);
-            game.selectSquare(square);
-          }
+        // Ensure within bounds
+        if (col >= 0 && col <= 7 && row >= 0 && row <= 7) {
+          final square = _coordsToSquare(col, row, isWhiteOrientation);
+          debugPrint('[Tap] GestureDetector onTapUp: $square');
+          game.selectSquare(square);
         }
-        _pointerDownPosition = null;
-      },
-      onPointerCancel: (event) {
-        _pointerDownPosition = null;
       },
       child: Container(
         color: Colors.transparent,
       ),
+    );
+  }
+
+  Widget _buildAnalysisResults(GameProvider game) {
+    final results = game.analysisResults;
+    if (results == null) return const SizedBox.shrink();
+
+    final analysis = results['analysis'];
+    if (analysis == null) return const SizedBox.shrink();
+
+    // Handle both 'evaluations' (old) and 'keyMoments' (new schema)
+    final evaluations = (analysis['evaluations'] ?? analysis['keyMoments'] ?? []) as List;
+
+    if (evaluations.isEmpty) {
+      return Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceLight,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.check_circle, color: AppColors.emeraldGreen),
+            const SizedBox(width: 8),
+            const Text('Great game! No major mistakes found.'),
+          ],
+        ),
+      );
+    }
+
+    // Count stats - only count significant moves
+    int blunders = 0;
+    int mistakes = 0;
+    int inaccuracies = 0;
+
+    for (var ev in evaluations) {
+      final classification = ev['classification']?.toString();
+      if (classification == 'blunder') blunders++;
+      else if (classification == 'mistake') mistakes++;
+      else if (classification == 'inaccuracy') inaccuracies++;
+    }
+
+    // Filter to only show important moves (not 'good', 'book', 'best')
+    final significantMoves = evaluations.where((ev) {
+      final c = ev['classification']?.toString();
+      return c == 'blunder' || c == 'mistake' || c == 'inaccuracy' || c == 'brilliant' || c == 'great';
+    }).toList();
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.borderColor),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.query_stats, color: AppColors.electricBlue),
+              const SizedBox(width: 8),
+              const Text('Analysis Results', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Accuracy display
+          if (analysis['accuracy'] != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildAccuracyItem('White', analysis['accuracy']['w'] ?? 0),
+                  _buildAccuracyItem('Black', analysis['accuracy']['b'] ?? 0),
+                ],
+              ),
+            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildStatItem('Blunders', blunders, AppColors.roseError),
+              _buildStatItem('Mistakes', mistakes, AppColors.amberWarning),
+              _buildStatItem('Inaccuracies', inaccuracies, Colors.orange),
+            ],
+          ),
+          if (significantMoves.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 120),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: significantMoves.length,
+                itemBuilder: (context, index) {
+                  final eval = significantMoves[index];
+                  final classification = eval['classification']?.toString() ?? '';
+
+                  Color color = Colors.grey;
+                  if (classification == 'blunder') color = AppColors.roseError;
+                  else if (classification == 'mistake') color = AppColors.amberWarning;
+                  else if (classification == 'inaccuracy') color = Colors.orange;
+                  else if (classification == 'brilliant') color = AppColors.tealAccent;
+                  else if (classification == 'great') color = AppColors.emeraldGreen;
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 30,
+                          child: Text(
+                            '${eval['moveIndex'] ?? index + 1}.',
+                            style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            eval['san'] ?? eval['move'] ?? 'Move ${eval['moveIndex']}',
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: color.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            classification.toUpperCase(),
+                            style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, int value, Color color) {
+    return Column(
+      children: [
+        Text(value.toString(), style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey)),
+      ],
+    );
+  }
+
+  Widget _buildAccuracyItem(String label, int accuracy) {
+    Color color;
+    if (accuracy >= 90) {
+      color = AppColors.emeraldGreen;
+    } else if (accuracy >= 70) {
+      color = AppColors.tealAccent;
+    } else if (accuracy >= 50) {
+      color = AppColors.amberWarning;
+    } else {
+      color = AppColors.roseError;
+    }
+
+    return Column(
+      children: [
+        Text(
+          '$accuracy%',
+          style: TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+        ),
+      ],
     );
   }
 }

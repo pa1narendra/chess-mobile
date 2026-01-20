@@ -3,6 +3,9 @@ import { GameState, PlayerColor } from './types';
 import { Game } from './schemas/game';
 import { User } from './schemas/user';
 import { BotManager } from './BotManager';
+// Use the ASM.js version to avoid WASM fetch issues in Bun
+// @ts-ignore
+import stockfish from 'stockfish.js/stockfish.js';
 
 interface QueueEntry {
     playerId: string;
@@ -560,27 +563,18 @@ export class GameManager {
                 game.history.push(result.san);
                 game.turn = chess.turn();
 
-                // Update DB
+                // Update DB with optimized move format (UCI string only)
+                const uciMove = `${move.from}${move.to}${move.promotion || ''}`;
                 Game.findOneAndUpdate(
                     { gameId },
                     {
-                        $push: {
-                            moves: {
-                                from: move.from,
-                                to: move.to,
-                                promotion: move.promotion,
-                                san: result.san,
-                                color: result.color,
-                                timestamp: new Date()
-                            }
-                        },
+                        $push: { moves: uciMove },
                         fen: game.fen,
                         pgn: chess.pgn(),
                         timeRemaining: {
                             w: game.timeRemaining.w,
                             b: game.timeRemaining.b
-                        },
-                        updatedAt: new Date()
+                        }
                     }
                 ).exec().catch(err => console.error(`[GameManager] Failed to save move to DB:`, err));
 
@@ -885,6 +879,8 @@ export class GameManager {
             return;
         }
 
+        console.log(`[GameManager] handleGameOver: ${gameId}, winner: ${winner}, reason: ${reason}`);
+
         // Update DB with complete final state
         const chess = this.chessInstances.get(gameId);
         Game.findOneAndUpdate(
@@ -912,18 +908,24 @@ export class GameManager {
         game.result = { winner, reason };
 
         this.clearTimer(gameId);
+
+        // CRITICAL: Notify clients via onGameOver callback
+        if (this.onGameOver) {
+            console.log(`[GameManager] Calling onGameOver callback for ${gameId}`);
+            this.onGameOver(gameId, { winner, reason, fen: game.fen });
+        }
         // We can keep chess instance for a while or delete it. 
         // Keeping it allows move validation if we wanted to allow analysis, but for now we can delete it to save memory if needed.
         // But let's keep it for consistency until cleanup.
 
         // Schedule cleanup
-        // User requested not to delete games after completion.
-        // We will keep them in memory. In a production app, we would want some cleanup strategy (e.g. LRU or 24h).
-        // setTimeout(() => {
-        //     this.games.delete(gameId);
-        //     this.chessInstances.delete(gameId);
-        //     console.log(`[GameManager] Cleaned up finished game ${gameId}`);
-        // }, 1000 * 60 * 60); // Keep for 1 hour
+        // Keep finished games in memory for a short while (e.g., 1 hour) to allow for
+        // invalidation, rejoin attempts (viewing results), etc.
+        setTimeout(() => {
+            this.games.delete(gameId);
+            this.chessInstances.delete(gameId);
+            console.log(`[GameManager] Cleaned up finished game ${gameId} from memory`);
+        }, 1000 * 60 * 60); // Keep for 1 hour
     }
 
     private async updateUserStats(whiteId: string | undefined, blackId: string | undefined, winner: string | null) {
@@ -1003,14 +1005,8 @@ export class GameManager {
 
         const winner = game.turn === 'w' ? 'b' : 'w';
         const reason = 'timeout';
-        if (this.onGameOver) {
-            console.log(`[GameManager] Calling onGameOver for ${gameId}`);
-            this.onGameOver(gameId, { winner, reason, fen: game.fen });
-        } else {
-            console.log(`[GameManager] onGameOver callback is missing!`);
-        }
 
-        // Clean up the game
+        // handleGameOver will notify clients via onGameOver callback
         this.handleGameOver(gameId, winner, reason);
     }
 
@@ -1030,4 +1026,131 @@ export class GameManager {
 
     //     this.handleGameOver(gameId, winner, reason);
     // }
+
+    async analyzeGame(gameId: string): Promise<any> {
+        const game = this.games.get(gameId);
+        // Allow analyzing finished games even if removed from memory if we fetch from DB, 
+        // but for now let's rely on in-memory or DB.
+        let gameData = game;
+
+        if (!gameData) {
+            // Try to fetch from DB
+            const gameDB = await Game.findOne({ gameId });
+            if (!gameDB) {
+                throw new Error('Game not found');
+            }
+            // Map DB object to GameState interface partially or just use what we need
+            // For analysis we just need moves or PGN/FEN
+            // We need to replay the game to get FENs for each move
+            gameData = {
+                id: gameDB.gameId,
+                fen: gameDB.fen,
+                // @ts-ignore
+                players: gameDB.players,
+                // @ts-ignore
+                userIds: gameDB.userIds || {},
+                history: gameDB.moves.map(m => m.san),
+                turn: 'w', // irrelevant
+                timeRemaining: { w: 0, b: 0 },
+                lastMoveTime: 0,
+                isPrivate: gameDB.isPrivate,
+                isBot: gameDB.isBot,
+                status: 'finished'
+            } as GameState;
+        }
+
+        console.log(`[Analysis] Starting analysis for game ${gameId}`);
+        const chess = new Chess();
+        const evaluations: any[] = [];
+
+        // Use a simpler approach: analyze the game positions
+        // We need to re-play the history
+        const moves = gameData.history;
+
+        // Limit analysis depth/time for performance
+        const ANALYSIS_DEPTH = 12; // Moderate depth
+
+        // We need to process moves sequentially
+        for (let i = 0; i < moves.length; i++) {
+            const move = moves[i];
+            chess.move(move);
+            const fen = chess.fen();
+
+            // Analyze this position
+            const evalResult = await this.evaluatePosition(fen, ANALYSIS_DEPTH);
+
+            evaluations.push({
+                moveIndex: i + 1,
+                move: move,
+                fen: fen,
+                evaluation: evalResult.score, // centipawns
+                bestMove: evalResult.bestMove,
+                classification: this.classifyMove(evalResult.score, 0) // TODO: Compare with previous eval to classify
+            });
+        }
+
+        // Save analysis to DB
+        await Game.findOneAndUpdate(
+            { gameId },
+            {
+                $set: {
+                    'analysis.evaluated': true,
+                    'analysis.analyzedAt': new Date(),
+                    'analysis.evaluations': evaluations
+                }
+            }
+        );
+
+        return evaluations;
+    }
+
+    private evaluatePosition(fen: string, depth: number): Promise<{ score: number, bestMove: string }> {
+        return new Promise((resolve) => {
+            const engine = stockfish();
+            let bestMove = '';
+            let score = 0;
+
+            engine.onmessage = (event: any) => {
+                const line = typeof event === 'string' ? event : event.toString();
+
+                if (line.startsWith('bestmove')) {
+                    const parts = line.split(' ');
+                    bestMove = parts[1];
+                    engine.postMessage('quit');
+                    resolve({ score, bestMove });
+                } else if (line.indexOf('cp ') > -1) {
+                    // Parse centipawn score: "info depth 10 ... score cp 50 ..."
+                    const parts = line.split(' ');
+                    const cpIndex = parts.indexOf('cp');
+                    if (cpIndex > -1 && cpIndex + 1 < parts.length) {
+                        const cp = parseInt(parts[cpIndex + 1]);
+                        // If it's black's turn to move in the position, negamax?
+                        // Stockfish usually reports score from white's perspective or side to move?
+                        // "score cp" is usually from side to move perspective.
+                        score = cp;
+                    }
+                } else if (line.indexOf('mate ') > -1) {
+                    const parts = line.split(' ');
+                    const mateIndex = parts.indexOf('mate');
+                    if (mateIndex > -1 && mateIndex + 1 < parts.length) {
+                        const mate = parseInt(parts[mateIndex + 1]);
+                        score = mate > 0 ? 10000 - mate : -10000 - mate;
+                    }
+                }
+            };
+
+            engine.postMessage(`position fen ${fen}`);
+            engine.postMessage(`go depth ${depth}`);
+        });
+    }
+
+    private classifyMove(currentEval: number, prevEval: number): string | null {
+        // Simple classification based on eval diff
+        const diff = currentEval - prevEval;
+        // This logic needs refinement based on who moved, but for a placeholder:
+        // if (Math.abs(diff) > 300) return 'blunder';
+        // if (Math.abs(diff) > 100) return 'mistake';
+        // if (Math.abs(diff) > 50) return 'inaccuracy';
+        return null;
+    }
 }

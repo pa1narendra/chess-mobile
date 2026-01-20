@@ -548,19 +548,26 @@ app.ws('/ws', {
             // Initial position
             positions.push({ moveIndex: 0, fen: chess.fen(), san: '', color: 'w' });
 
-            // Play through all moves
+            // Play through all moves (moves are now UCI strings like "e2e4", "e7e8q")
             for (let i = 0; i < game.moves.length; i++) {
-                const move = game.moves[i];
-                // Skip moves with missing required data
-                if (!move.from || !move.to || !move.san || !move.color) continue;
+                const uciMove = game.moves[i] as string;
+                if (!uciMove || uciMove.length < 4) continue;
 
-                chess.move({ from: move.from, to: move.to, promotion: move.promotion || undefined });
-                positions.push({
-                    moveIndex: i + 1,
-                    fen: chess.fen(),
-                    san: move.san,
-                    color: move.color
-                });
+                // Parse UCI move: "e2e4" -> from: "e2", to: "e4"
+                const from = uciMove.slice(0, 2);
+                const to = uciMove.slice(2, 4);
+                const promotion = uciMove.length > 4 ? uciMove[4] : undefined;
+                const color = i % 2 === 0 ? 'w' : 'b';  // Derive color from move index
+
+                const result = chess.move({ from, to, promotion });
+                if (result) {
+                    positions.push({
+                        moveIndex: i + 1,
+                        fen: chess.fen(),
+                        san: result.san,
+                        color
+                    });
+                }
             }
 
             // Analyze each position using Stockfish
@@ -608,18 +615,56 @@ app.ws('/ws', {
                 previousEval = evaluation;
             }
 
-            // Store analysis in database
+            // Calculate accuracy for each player
+            let whiteTotal = 0, whiteCount = 0;
+            let blackTotal = 0, blackCount = 0;
+
+            for (const ev of evaluations) {
+                const score = ev.classification === 'blunder' ? 0 :
+                              ev.classification === 'mistake' ? 25 :
+                              ev.classification === 'inaccuracy' ? 50 :
+                              ev.classification === 'good' ? 75 :
+                              ev.classification === 'great' ? 90 :
+                              ev.classification === 'brilliant' ? 100 : 85;
+
+                const color = positions.find(p => p.moveIndex === ev.moveIndex)?.color;
+                if (color === 'w') {
+                    whiteTotal += score;
+                    whiteCount++;
+                } else if (color === 'b') {
+                    blackTotal += score;
+                    blackCount++;
+                }
+            }
+
+            const whiteAccuracy = whiteCount > 0 ? Math.round(whiteTotal / whiteCount) : 100;
+            const blackAccuracy = blackCount > 0 ? Math.round(blackTotal / blackCount) : 100;
+
+            // Filter to only significant moves (mistakes, blunders, brilliant)
+            const keyMoments = evaluations.filter((ev: any) =>
+                ['blunder', 'mistake', 'inaccuracy', 'brilliant', 'great'].includes(ev.classification)
+            );
+
+            // Store analysis in database (using new schema fields)
             game.analysis = {
                 evaluated: true,
-                evaluations: evaluations as any, // Type assertion to handle Mongoose DocumentArray
+                accuracy: { w: whiteAccuracy, b: blackAccuracy },
+                keyMoments: keyMoments as any,
                 analyzedAt: new Date()
             };
 
             await game.save();
 
+            // Return full evaluations for frontend display
             return {
                 message: 'Analysis complete',
-                analysis: game.analysis
+                analysis: {
+                    evaluated: true,
+                    accuracy: { w: whiteAccuracy, b: blackAccuracy },
+                    evaluations: evaluations,  // Full list for display
+                    keyMoments: keyMoments,
+                    analyzedAt: new Date()
+                }
             };
 
         } catch (error: any) {
