@@ -1,8 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { User } from './schemas/user';
 import jwt from 'jsonwebtoken';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+import { JWT_SECRET } from './middleware/authMiddleware';
 
 export const auth = new Elysia({ prefix: '/auth' })
     .post('/register', async ({ body, set }) => {

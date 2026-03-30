@@ -175,11 +175,11 @@ export class GameManager {
             .then(() => console.log(`[DB] Matched game ${gameId} created`))
             .catch(err => console.error(`[DB] Failed to save matched game ${gameId}:`, err.message));
 
-        // Start timer
         this.resetMoveTimer(gameId);
 
         return gameId;
     }
+
 
     removeFromQueue(playerId: string): boolean {
         return this.matchmakingQueue.delete(playerId);
@@ -444,7 +444,7 @@ export class GameManager {
             startedAt: isBot ? new Date() : undefined
         });
         gameDB.save()
-            .then(() => console.log(`[DB] Game ${gameId} created with userIds:`, userIds))
+            .then(() => console.log(`[DB] Game ${gameId} created`))
             .catch(err => console.error(`[DB] Failed to save game ${gameId}:`, err.message));
 
         // If bot is white, make first move
@@ -482,7 +482,8 @@ export class GameManager {
                 updateData['userIds.w'] = userId;
                 game.userIds.w = userId; // Also update in-memory
             }
-            Game.findOneAndUpdate({ gameId }, updateData).exec();
+            Game.findOneAndUpdate({ gameId }, updateData).exec()
+                .catch(err => console.error(`[DB] Failed to update game ${gameId} on join:`, err.message));
 
             // Start timer (White moves first)
             game.lastMoveTime = Date.now();
@@ -503,7 +504,8 @@ export class GameManager {
                 updateData['userIds.b'] = userId;
                 game.userIds.b = userId; // Also update in-memory
             }
-            Game.findOneAndUpdate({ gameId }, updateData).exec();
+            Game.findOneAndUpdate({ gameId }, updateData).exec()
+                .catch(err => console.error(`[DB] Failed to update game ${gameId} on join:`, err.message));
 
             // Start timer (White moves first)
             game.lastMoveTime = Date.now();
@@ -515,7 +517,7 @@ export class GameManager {
         return null; // Game full
     }
 
-    makeMove(gameId: string, playerId: string, move: { from: string; to: string; promotion?: string }): { success: boolean, fen?: string, history?: string[], error?: string, gameOver?: boolean, winner?: string | null, reason?: string | null, lastMove?: { from: string, to: string } } {
+    async makeMove(gameId: string, playerId: string, move: { from: string; to: string; promotion?: string }): Promise<{ success: boolean, fen?: string, history?: string[], error?: string, gameOver?: boolean, winner?: string | null, reason?: string | null, lastMove?: { from: string, to: string } }> {
         const game = this.games.get(gameId);
         const chess = this.chessInstances.get(gameId);
 
@@ -563,20 +565,24 @@ export class GameManager {
                 game.history.push(result.san);
                 game.turn = chess.turn();
 
-                // Update DB with optimized move format (UCI string only)
+                // Persist move to DB — awaited so we know if it fails
                 const uciMove = `${move.from}${move.to}${move.promotion || ''}`;
-                Game.findOneAndUpdate(
-                    { gameId },
-                    {
-                        $push: { moves: uciMove },
-                        fen: game.fen,
-                        pgn: chess.pgn(),
-                        timeRemaining: {
-                            w: game.timeRemaining.w,
-                            b: game.timeRemaining.b
+                try {
+                    await Game.findOneAndUpdate(
+                        { gameId },
+                        {
+                            $push: { moves: uciMove },
+                            fen: game.fen,
+                            pgn: chess.pgn(),
+                            timeRemaining: {
+                                w: game.timeRemaining.w,
+                                b: game.timeRemaining.b
+                            }
                         }
-                    }
-                ).exec().catch(err => console.error(`[GameManager] Failed to save move to DB:`, err));
+                    ).exec();
+                } catch (err: any) {
+                    console.error(`[GameManager] Failed to save move to DB:`, err.message);
+                }
 
                 let gameOver = false;
                 let winner: string | null = null;
@@ -603,12 +609,14 @@ export class GameManager {
                     }
 
                     // Update DB with result
-                    Game.findOneAndUpdate(
-                        { gameId },
-                        {
-                            result: { winner, reason }
-                        }
-                    ).exec();
+                    try {
+                        await Game.findOneAndUpdate(
+                            { gameId },
+                            { result: { winner, reason } }
+                        ).exec();
+                    } catch (err: any) {
+                        console.error(`[GameManager] Failed to save game result:`, err.message);
+                    }
 
                     // Update User Stats
                     // this.updateUserStats(game.players.w, game.players.b, winner);
@@ -748,8 +756,8 @@ export class GameManager {
                 this.clearTimer(gameId);
                 this.chessInstances.delete(gameId);
 
-                // Also remove from DB if needed, or mark as abandoned
-                Game.deleteOne({ gameId }).exec();
+                Game.deleteOne({ gameId }).exec()
+                    .catch(err => console.error(`[DB] Failed to delete pending game ${gameId}:`, err.message));
                 return true;
             }
         }
@@ -806,18 +814,22 @@ export class GameManager {
         if (!game) return;
 
         const turn = game.turn;
-        const timeRemaining = game.timeRemaining[turn];
+        // Recalculate actual time remaining based on elapsed since last move
+        const now = Date.now();
+        const elapsed = now - game.lastMoveTime;
+        const actualTimeRemaining = game.timeRemaining[turn] - elapsed;
 
-        if (timeRemaining <= 0) {
+        if (actualTimeRemaining <= 0) {
             this.handleTimeout(gameId);
             return;
         }
 
-        console.log(`[GameManager] Setting timeout for ${gameId} (${turn}) in ${timeRemaining}ms`);
+        // Cap timer to avoid excessively long setTimeout (max 30 min)
+        const timerMs = Math.min(actualTimeRemaining, 30 * 60 * 1000);
 
         const timer = setTimeout(() => {
             this.handleTimeout(gameId);
-        }, timeRemaining); // Use exact time remaining
+        }, timerMs);
 
         this.timeoutHandlers.set(gameId, timer);
     }
@@ -869,7 +881,7 @@ export class GameManager {
         return true;
     }
 
-    private handleGameOver(gameId: string, winner: string | null, reason: string | null) {
+    private async handleGameOver(gameId: string, winner: string | null, reason: string | null) {
         const game = this.games.get(gameId);
         if (!game) return;
 
@@ -881,23 +893,27 @@ export class GameManager {
 
         console.log(`[GameManager] handleGameOver: ${gameId}, winner: ${winner}, reason: ${reason}`);
 
-        // Update DB with complete final state
+        // Persist final state to DB
         const chess = this.chessInstances.get(gameId);
-        Game.findOneAndUpdate(
-            { gameId },
-            {
-                result: { winner, reason },
-                fen: game.fen,
-                pgn: chess?.pgn() || '',
-                status: 'finished',
-                timeRemaining: {
-                    w: game.timeRemaining.w,
-                    b: game.timeRemaining.b
-                },
-                endedAt: new Date(),
-                updatedAt: new Date()
-            }
-        ).exec().catch(err => console.error(`[GameManager] Failed to save game result to DB:`, err));
+        try {
+            await Game.findOneAndUpdate(
+                { gameId },
+                {
+                    result: { winner, reason },
+                    fen: game.fen,
+                    pgn: chess?.pgn() || '',
+                    status: 'finished',
+                    timeRemaining: {
+                        w: game.timeRemaining.w,
+                        b: game.timeRemaining.b
+                    },
+                    endedAt: new Date(),
+                    updatedAt: new Date()
+                }
+            ).exec();
+        } catch (err: any) {
+            console.error(`[GameManager] Failed to save game result to DB:`, err.message);
+        }
 
         // Update User Stats (use userIds for registered users, not players which might be 'bot')
         this.updateUserStats(game.userIds.w, game.userIds.b, winner);
@@ -982,51 +998,33 @@ export class GameManager {
     }
 
     private handleTimeout(gameId: string) {
-        console.log(`[GameManager] handleTimeout triggered for ${gameId}`);
         const game = this.games.get(gameId);
-        if (!game) {
-            console.log(`[GameManager] Game ${gameId} not found in handleTimeout`);
-            return;
-        }
+        if (!game) return;
 
-        // Prevent race condition - don't process if game already finished
-        if (game.status === 'finished') {
-            console.log(`[GameManager] Game ${gameId} already finished, skipping timeout`);
-            return;
-        }
+        if (game.status === 'finished') return;
 
-        // Double check time (optional, but good for safety)
+        // Recalculate actual time remaining to confirm timeout
         const now = Date.now();
         const elapsed = now - game.lastMoveTime;
-        const timeRemaining = game.timeRemaining[game.turn] - elapsed;
-        console.log(`[GameManager] Time remaining at timeout: ${timeRemaining}ms`);
+        const actualTimeRemaining = game.timeRemaining[game.turn] - elapsed;
 
-        // If we are here via setTimeout, time should be roughly <= 0.
+        if (actualTimeRemaining > 100) {
+            // Not actually timed out yet (timer fired early due to drift)
+            // Reset timer with correct remaining time
+            this.resetMoveTimer(gameId);
+            return;
+        }
+
+        // Deduct elapsed time so the stored value is accurate
+        game.timeRemaining[game.turn] = Math.max(0, game.timeRemaining[game.turn] - elapsed);
+        game.lastMoveTime = now;
 
         const winner = game.turn === 'w' ? 'b' : 'w';
-        const reason = 'timeout';
-
-        // handleGameOver will notify clients via onGameOver callback
-        this.handleGameOver(gameId, winner, reason);
+        this.handleGameOver(gameId, winner, 'timeout');
     }
 
     // private handleTimeout(gameId: string) {
     //     const game = this.games.get(gameId);
-    //     if (!game) return;
-
-    //     // Double check time (optional, but good for safety)
-    //     const now = Date.now();
-    //     const elapsed = now - game.lastMoveTime;
-    //     const timeRemaining = game.timeRemaining[game.turn] - elapsed;
-
-    //     // If we are here via setTimeout, time should be roughly <= 0.
-
-    //     const winner = game.turn === 'w' ? 'b' : 'w';
-    //     const reason = 'timeout';
-
-    //     this.handleGameOver(gameId, winner, reason);
-    // }
-
     async analyzeGame(gameId: string): Promise<any> {
         const game = this.games.get(gameId);
         // Allow analyzing finished games even if removed from memory if we fetch from DB, 

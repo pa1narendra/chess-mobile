@@ -7,7 +7,7 @@ import 'screens/login_screen.dart';
 import 'providers/auth_provider.dart';
 import 'providers/game_provider.dart';
 
-import 'utils/config.dart';
+import 'utils/config.dart' as app_config;
 
 // App Theme Colors
 class AppColors {
@@ -42,7 +42,7 @@ void main() async {
     systemNavigationBarIconBrightness: Brightness.light,
   ));
 
-  await Config.load();
+  await app_config.Config.load();
 
   runApp(
     MultiProvider(
@@ -91,7 +91,7 @@ class ChessingApp extends StatelessWidget {
           ),
         ),
 
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           color: AppColors.surfaceDark,
           elevation: 0,
           shape: RoundedRectangleBorder(
@@ -100,7 +100,7 @@ class ChessingApp extends StatelessWidget {
           ),
         ),
 
-        dialogTheme: DialogTheme(
+        dialogTheme: DialogThemeData(
           backgroundColor: AppColors.surfaceDark,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),

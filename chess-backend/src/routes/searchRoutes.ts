@@ -1,9 +1,22 @@
 import { Elysia, t } from 'elysia';
 import searchService from '../services/SearchService';
+import { verifyAuthHeader } from '../middleware/authMiddleware';
+
+// Middleware that requires authentication for all search routes
+function requireAuth(headers: Record<string, string | undefined>, set: any): boolean {
+    const user = verifyAuthHeader(headers['authorization']);
+    if (!user) {
+        set.status = 401;
+        return false;
+    }
+    return true;
+}
 
 export const searchRoutes = new Elysia({ prefix: '/search' })
     // POST /search/:tableName - Advanced search with aggregation
-    .post('/searchresource/:tableName', async ({ params, body, query }) => {
+    .post('/searchresource/:tableName', async ({ params, body, query, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName } = params;
         const options = {
             page: query.page ? parseInt(query.page as string) : undefined,
@@ -26,12 +39,13 @@ export const searchRoutes = new Elysia({ prefix: '/search' })
             lookups: t.Optional(t.Array(t.Any())),
             unwind: t.Optional(t.Union([t.String(), t.Array(t.String())])),
             addFields: t.Optional(t.Any()),
-            customStages: t.Optional(t.Array(t.Any()))
         }))
     })
 
     // GET /search/:tableName/:id - Get single resource
-    .get('/searchresource/:tableName/:id', async ({ params }) => {
+    .get('/searchresource/:tableName/:id', async ({ params, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName, id } = params;
         return await searchService.getResource(tableName, { id });
     }, {
@@ -42,7 +56,9 @@ export const searchRoutes = new Elysia({ prefix: '/search' })
     })
 
     // POST /search/:tableName/create - Create new resource
-    .post('/createresource/:tableName', async ({ params, body }) => {
+    .post('/createresource/:tableName', async ({ params, body, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName } = params;
         return await searchService.createResource(tableName, body);
     }, {
@@ -53,7 +69,9 @@ export const searchRoutes = new Elysia({ prefix: '/search' })
     })
 
     // PUT /search/:tableName/:id - Update resource
-    .put('/updateresource/:tableName/:id', async ({ params, body }) => {
+    .put('/updateresource/:tableName/:id', async ({ params, body, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName, id } = params;
         return await searchService.updateResource(tableName, { id }, body);
     }, {
@@ -65,9 +83,10 @@ export const searchRoutes = new Elysia({ prefix: '/search' })
     })
 
     // PATCH /search/:tableName/:id - Update resource (alternative method)
-    .patch('/updateresource/:tableName/:id', async ({ params, body }) => {
+    .patch('/updateresource/:tableName/:id', async ({ params, body, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName, id } = params;
-        console.log("PATCH update body", body, params);
         try {
             const result = await searchService.updateResource(tableName, { id }, body);
             return result;
@@ -84,7 +103,9 @@ export const searchRoutes = new Elysia({ prefix: '/search' })
     })
 
     // DELETE /search/:tableName/:id - Delete resource
-    .delete('/deleteresource/:tableName/:id', async ({ params }) => {
+    .delete('/deleteresource/:tableName/:id', async ({ params, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName, id } = params;
         return await searchService.deleteResource(tableName, { id });
     }, {
@@ -95,7 +116,9 @@ export const searchRoutes = new Elysia({ prefix: '/search' })
     })
 
     // POST /search/:tableName/aggregate - Direct aggregation
-    .post('/aggregatetable/:tableName', async ({ params, body }) => {
+    .post('/aggregatetable/:tableName', async ({ params, body, headers, set }) => {
+        if (!requireAuth(headers, set)) return { error: 'Authentication required' };
+
         const { tableName } = params;
         return await searchService.directAggregation(tableName, body);
     }, {

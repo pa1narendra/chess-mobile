@@ -8,6 +8,21 @@ const modelMap: { [key: string]: mongoose.Model<any> } = {
     Users: User
 };
 
+// Dangerous MongoDB operators that could allow code execution or data exfiltration
+const DANGEROUS_OPERATORS = new Set([
+    '$where', '$function', '$accumulator', '$expr',
+    '$merge', '$out', '$collStats', '$indexStats',
+    '$planCacheStats', '$currentOp', '$listSessions'
+]);
+
+// Allowed aggregation stage operators (whitelist)
+const ALLOWED_STAGES = new Set([
+    '$match', '$sort', '$project', '$limit', '$skip',
+    '$count', '$group', '$unwind', '$lookup',
+    '$addFields', '$set', '$facet', '$bucket',
+    '$bucketAuto', '$sortByCount', '$replaceRoot'
+]);
+
 // Custom Error Classes
 class NotFoundError extends Error {
     status: number;
@@ -34,6 +49,44 @@ export function getModel(tableName: string) {
     const model = modelMap[tableName];
     if (!model) throw new NotFoundError(`No model found for table: ${tableName}`);
     return model;
+}
+
+/**
+ * Recursively checks an object for dangerous MongoDB operators.
+ * Throws if any are found.
+ */
+function sanitizeQuery(obj: any, path: string = ''): void {
+    if (!obj || typeof obj !== 'object') return;
+
+    if (Array.isArray(obj)) {
+        obj.forEach((item, i) => sanitizeQuery(item, `${path}[${i}]`));
+        return;
+    }
+
+    for (const key of Object.keys(obj)) {
+        if (DANGEROUS_OPERATORS.has(key)) {
+            throw new ValidationError(`Operator "${key}" is not allowed at ${path}.${key}`);
+        }
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+            sanitizeQuery(obj[key], `${path}.${key}`);
+        }
+    }
+}
+
+/**
+ * Validates that aggregation pipeline stages only use allowed operators.
+ */
+function validatePipelineStages(pipeline: any[]): void {
+    for (const stage of pipeline) {
+        const stageKeys = Object.keys(stage);
+        for (const key of stageKeys) {
+            if (!ALLOWED_STAGES.has(key)) {
+                throw new ValidationError(`Aggregation stage "${key}" is not allowed`);
+            }
+            // Also check for dangerous operators within stage values
+            sanitizeQuery(stage[key], key);
+        }
+    }
 }
 
 // Helper function to convert strings to ObjectIds and Dates based on schema
@@ -69,7 +122,7 @@ function convertStringsToObjectIdsAndDates(obj: any, schema: mongoose.Schema<any
             (schemaType.caster.instance === "ObjectID" || schemaType.caster.instance === "ObjectId")
         ) {
             if (obj[key] && typeof obj[key] === "object") {
-                for (const op of ["$in", "$all", "$nin", "$or", "$and"]) {
+                for (const op of ["$in", "$all", "$nin"]) {
                     if (obj[key][op] && Array.isArray(obj[key][op])) {
                         obj[key][op] = obj[key][op].map((v: any) =>
                             typeof v === "string" && mongoose.Types.ObjectId.isValid(v)
@@ -82,11 +135,9 @@ function convertStringsToObjectIdsAndDates(obj: any, schema: mongoose.Schema<any
         }
         // Handle Date fields
         else if (schemaType && schemaType.instance === "Date") {
-            // If the value is a string, convert to Date
             if (typeof obj[key] === "string") {
                 obj[key] = new Date(obj[key]);
             }
-            // If the value is an object with $gte/$lte/$gt/$lt, convert those
             if (typeof obj[key] === "object" && obj[key] !== null) {
                 for (const op of ["$gte", "$lte", "$gt", "$lt", "$eq", "$ne"]) {
                     if (obj[key][op] && typeof obj[key][op] === "string") {
@@ -109,9 +160,12 @@ const searchService = {
         try {
             const Model = getModel(tableName);
 
-            // Convert string ObjectIds to MongoDB ObjectIds before creating the document
-            const convertedBody = convertStringsToObjectIdsAndDates(body, Model.schema);
+            // Block creating Users directly — registration must go through /auth/register
+            if (tableName === 'Users') {
+                return { success: false, error: 'Cannot create users via this endpoint. Use /auth/register.' };
+            }
 
+            const convertedBody = convertStringsToObjectIdsAndDates(body, Model.schema);
             const doc = new Model(convertedBody);
             const result = await doc.save();
             return { success: true, data: result };
@@ -139,7 +193,6 @@ const searchService = {
         try {
             const Model = getModel(tableName);
 
-            // Extract options from queryBody or options param
             const {
                 filter = {},
                 sort = { _id: -1 },
@@ -147,39 +200,39 @@ const searchService = {
                 lookups,
                 unwind,
                 addFields,
-                customStages,
                 ...rest
             } = queryBody;
 
-            // Convert string ObjectIds in filter to real ObjectIds
+            // Sanitize all user-provided query parts
+            sanitizeQuery(filter, 'filter');
+            sanitizeQuery(sort, 'sort');
+            sanitizeQuery(project, 'project');
+            sanitizeQuery(addFields, 'addFields');
+            if (Array.isArray(lookups)) sanitizeQuery(lookups, 'lookups');
+
             const convertedFilter = convertStringsToObjectIdsAndDates({ ...filter }, Model.schema);
 
-            // Pagination
+            // Pagination with max page size
             const page = options?.page || rest.page || 1;
-            const pageSize = options?.pageSize || rest.pageSize || 20;
+            const pageSize = Math.min(options?.pageSize || rest.pageSize || 20, 100);
             const skip = (page - 1) * pageSize;
 
-            // Build the aggregation pipeline dynamically
             const pipeline: any[] = [];
 
-            // $match
             if (convertedFilter && Object.keys(convertedFilter).length > 0) {
                 pipeline.push({ $match: convertedFilter });
             }
 
-            // $addFields
             if (addFields) {
                 pipeline.push({ $addFields: addFields });
             }
 
-            // $lookup (array of lookups)
             if (Array.isArray(lookups)) {
                 for (const lookup of lookups) {
                     pipeline.push({ $lookup: lookup });
                 }
             }
 
-            // $unwind
             if (unwind) {
                 if (Array.isArray(unwind)) {
                     unwind.forEach(u => pipeline.push({ $unwind: u }));
@@ -188,22 +241,20 @@ const searchService = {
                 }
             }
 
-            // $sort
             if (sort) {
                 pipeline.push({ $sort: sort });
             }
 
-            // $project
             if (project) {
+                // Never expose passwordHash
+                if (tableName === 'Users') {
+                    project.passwordHash = 0;
+                }
                 pipeline.push({ $project: project });
+            } else if (tableName === 'Users') {
+                pipeline.push({ $project: { passwordHash: 0 } });
             }
 
-            // Custom stages (for advanced users)
-            if (Array.isArray(customStages)) {
-                pipeline.push(...customStages);
-            }
-
-            // $facet for pagination and total count
             pipeline.push({
                 $facet: {
                     data: [
@@ -216,15 +267,12 @@ const searchService = {
                 }
             });
 
-            // Run the aggregation
             const [result] = await Model.aggregate(pipeline);
 
-            // Extract results and total count
             const data = result.data;
             const total = result.total.length > 0 ? result.total[0].count : 0;
             const totalPages = Math.ceil(total / pageSize);
 
-            // Return paginated response
             return {
                 success: true,
                 data,
@@ -236,7 +284,7 @@ const searchService = {
                 }
             };
         } catch (error: any) {
-            if (error instanceof NotFoundError) {
+            if (error instanceof NotFoundError || error instanceof ValidationError) {
                 return { success: false, error: error.message, status: error.status };
             }
             return { success: false, error: error.message || "Failed to search resource" };
@@ -248,14 +296,18 @@ const searchService = {
         try {
             const Model = getModel(tableName);
 
-            // Support both _id and custom id field
             const query = params.id ?
                 (mongoose.Types.ObjectId.isValid(params.id) ?
                     { _id: params.id } :
                     { id: params.id }) :
                 params;
 
-            const result = await Model.findOne(query).lean();
+            let q = Model.findOne(query);
+            if (tableName === 'Users') {
+                q = q.select('-passwordHash');
+            }
+            const result = await q.lean();
+
             if (!result) throw new NotFoundError(`Resource not found with id: ${params.id}`);
             return { success: true, data: result };
         } catch (error: any) {
@@ -293,7 +345,14 @@ const searchService = {
         try {
             const Model = getModel(tableName);
 
-            // Convert string ObjectIds to MongoDB ObjectIds before updating
+            // Block updating sensitive fields directly
+            if (tableName === 'Users') {
+                delete body.passwordHash;
+                delete body.password;
+            }
+
+            sanitizeQuery(body, 'body');
+
             const convertedBody = convertStringsToObjectIdsAndDates(body, Model.schema);
 
             const query = params.id ?
@@ -318,8 +377,8 @@ const searchService = {
                     details: error.errors || error.message
                 };
             }
-            if (error instanceof NotFoundError) {
-                return { success: false, error: error.message, status: error.status };
+            if (error instanceof NotFoundError || error instanceof ValidationError) {
+                return { success: false, error: error.message, status: (error as any).status };
             }
             return { success: false, error: error.message || "Failed to update resource" };
         }
@@ -330,6 +389,9 @@ const searchService = {
         try {
             const Model = getModel(tableName);
 
+            // Validate pipeline stages against whitelist
+            validatePipelineStages(pipelineBody);
+
             // Process each pipeline stage to convert string ObjectIds to real ObjectIds
             const processedPipeline = pipelineBody.map(stage => {
                 const processedStage: any = {};
@@ -339,7 +401,11 @@ const searchService = {
                 return processedStage;
             });
 
-            // Run the aggregation directly with the processed pipeline
+            // Always exclude passwordHash from Users queries
+            if (tableName === 'Users') {
+                processedPipeline.push({ $project: { passwordHash: 0 } });
+            }
+
             const result = await Model.aggregate(processedPipeline);
 
             return {
@@ -347,13 +413,12 @@ const searchService = {
                 data: result
             };
         } catch (error: any) {
-            if (error instanceof NotFoundError) {
-                return { success: false, error: error.message, status: error.status };
+            if (error instanceof NotFoundError || error instanceof ValidationError) {
+                return { success: false, error: error.message, status: (error as any).status };
             }
             return {
                 success: false,
-                error: error.message || "Failed to execute direct aggregation",
-                stack: error.stack
+                error: error.message || "Failed to execute direct aggregation"
             };
         }
     }
