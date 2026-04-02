@@ -5,7 +5,7 @@ class Config {
   // Use 10.0.2.2 for Android emulator (maps to host localhost)
   // Use localhost for web or iOS simulator
   // Users on physical devices need to configure their server IP
-  static const String _defaultIp = "10.0.2.2";
+  static const String _defaultIp = "192.168.1.115";
   static const int _port = 8080;
 
   static Future<void> load() async {

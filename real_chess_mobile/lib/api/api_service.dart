@@ -127,6 +127,86 @@ class ApiService {
       throw ApiException('Failed to verify session');
     }
   }
+  // --- Game History ---
+  static Future<Map<String, dynamic>> getGameHistory(String token, {int page = 1, int pageSize = 20}) async {
+    final url = '$baseUrl/api/games/history?page=$page&pageSize=$pageSize';
+    try {
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to fetch game history', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch game history');
+    }
+  }
+
+  static Future<Map<String, dynamic>> getGameDetails(String gameId) async {
+    final url = '$baseUrl/api/games/$gameId/details';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Game not found', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch game details');
+    }
+  }
+
+  // --- Leaderboard ---
+  static Future<Map<String, dynamic>> getLeaderboard({int page = 1, int pageSize = 20}) async {
+    final url = '$baseUrl/api/leaderboard?page=$page&pageSize=$pageSize';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to fetch leaderboard', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch leaderboard');
+    }
+  }
+
+  // --- User Profile ---
+  static Future<Map<String, dynamic>> getUserProfile(String userId) async {
+    final url = '$baseUrl/api/users/$userId/profile';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('User not found', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch profile');
+    }
+  }
+
+  static Future<Map<String, dynamic>> updateProfile(String token, Map<String, dynamic> updates) async {
+    final url = '$baseUrl/api/users/profile';
+    try {
+      final response = await http.put(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+        body: jsonEncode(updates),
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to update profile', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to update profile');
+    }
+  }
+
   static Future<Map<String, dynamic>> analyzeGame(String gameId, String token) async {
     final url = '$baseUrl/api/games/$gameId/analyze';
     _log('Request: POST $url');

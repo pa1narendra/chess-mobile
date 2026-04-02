@@ -26,7 +26,7 @@ export const auth = new Elysia({ prefix: '/auth' })
 
             const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
 
-            return { token, user: { id: user._id, username: user.username, rating: user.rating } };
+            return { token, user: { id: user._id, username: user.username, rating: user.rating, profile: (user as any).profile } };
         } catch (error: any) {
             console.error('[Auth] Registration error:', error);
             set.status = 500;
@@ -57,7 +57,7 @@ export const auth = new Elysia({ prefix: '/auth' })
 
             const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
 
-            return { token, user: { id: user._id, username: user.username, rating: user.rating } };
+            return { token, user: { id: user._id, username: user.username, rating: user.rating, profile: (user as any).profile } };
         } catch (error) {
             set.status = 500;
             return { error: 'Login failed' };

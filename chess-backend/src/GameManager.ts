@@ -915,8 +915,8 @@ export class GameManager {
             console.error(`[GameManager] Failed to save game result to DB:`, err.message);
         }
 
-        // Update User Stats (use userIds for registered users, not players which might be 'bot')
-        this.updateUserStats(game.userIds.w, game.userIds.b, winner);
+        // Update User Stats with Glicko-2 and get rating changes
+        const ratingChanges = await this.updateUserStats(game.userIds.w, game.userIds.b, winner);
 
         // Mark as finished instead of deleting
         game.status = 'finished';
@@ -927,8 +927,12 @@ export class GameManager {
 
         // CRITICAL: Notify clients via onGameOver callback
         if (this.onGameOver) {
-            console.log(`[GameManager] Calling onGameOver callback for ${gameId}`);
-            this.onGameOver(gameId, { winner, reason, fen: game.fen });
+            this.onGameOver(gameId, {
+                winner,
+                reason,
+                fen: game.fen,
+                ratingChanges: ratingChanges ? { w: ratingChanges.whiteChange, b: ratingChanges.blackChange } : undefined
+            });
         }
         // We can keep chess instance for a while or delete it. 
         // Keeping it allows move validation if we wanted to allow analysis, but for now we can delete it to save memory if needed.
@@ -944,40 +948,94 @@ export class GameManager {
         }, 1000 * 60 * 60); // Keep for 1 hour
     }
 
-    private async updateUserStats(whiteId: string | undefined, blackId: string | undefined, winner: string | null) {
-        if (!whiteId || !blackId) return;
+    private async updateUserStats(whiteId: string | undefined, blackId: string | undefined, winner: string | null): Promise<{ whiteChange: number; blackChange: number } | null> {
+        if (!whiteId || !blackId) return null;
+        if (!/^[0-9a-fA-F]{24}$/.test(whiteId) || !/^[0-9a-fA-F]{24}$/.test(blackId)) return null;
 
-        const updateStats = async (playerId: string, result: 'win' | 'loss' | 'draw') => {
-            try {
-                // Check if valid ObjectId (24 hex chars)
-                if (!/^[0-9a-fA-F]{24}$/.test(playerId)) return;
+        try {
+            const { calculateGameRatings } = await import('./services/ratingService');
 
-                const inc: any = { gamesPlayed: 1 };
-                if (result === 'win') {
-                    inc.wins = 1;
-                    inc.rating = 10; // Simple ELO +10
-                } else if (result === 'loss') {
-                    inc.losses = 1;
-                    inc.rating = -10; // Simple ELO -10
-                } else {
-                    inc.draws = 1;
+            const whiteUser = await User.findById(whiteId);
+            const blackUser = await User.findById(blackId);
+            if (!whiteUser || !blackUser) return null;
+
+            const winnerColor = winner === 'w' ? 'w' : winner === 'b' ? 'b' : 'draw' as const;
+
+            const result = calculateGameRatings(
+                { rating: whiteUser.rating || 1200, rd: whiteUser.ratingDeviation || 350 },
+                { rating: blackUser.rating || 1200, rd: blackUser.ratingDeviation || 350 },
+                winnerColor
+            );
+
+            // Update white player
+            const whiteStatsInc: any = { 'stats.games': 1 };
+            if (winner === 'w') whiteStatsInc['stats.wins'] = 1;
+            else if (winner === 'b') whiteStatsInc['stats.losses'] = 1;
+            else whiteStatsInc['stats.draws'] = 1;
+
+            // Update streak
+            const whiteStreak = winner === 'w'
+                ? Math.max(1, (whiteUser.stats?.currentStreak ?? 0) > 0 ? (whiteUser.stats?.currentStreak ?? 0) + 1 : 1)
+                : winner === 'b'
+                    ? Math.min(-1, (whiteUser.stats?.currentStreak ?? 0) < 0 ? (whiteUser.stats?.currentStreak ?? 0) - 1 : -1)
+                    : 0;
+
+            await User.findByIdAndUpdate(whiteId, {
+                $inc: whiteStatsInc,
+                $set: {
+                    rating: result.white.newRating,
+                    ratingDeviation: result.white.newRd,
+                    'stats.currentStreak': whiteStreak,
+                    lastActive: new Date()
+                },
+                $max: {
+                    peakRating: result.white.newRating,
+                    'stats.bestStreak': whiteStreak
+                },
+                $push: {
+                    ratingHistory: {
+                        $each: [{ r: result.white.newRating, d: new Date() }],
+                        $slice: -30
+                    }
                 }
+            });
 
-                await User.findByIdAndUpdate(playerId, { $inc: inc });
-            } catch (e) {
-                console.log(`[GameManager] Failed to update stats for ${playerId}:`, e);
-            }
-        };
+            // Update black player
+            const blackStatsInc: any = { 'stats.games': 1 };
+            if (winner === 'b') blackStatsInc['stats.wins'] = 1;
+            else if (winner === 'w') blackStatsInc['stats.losses'] = 1;
+            else blackStatsInc['stats.draws'] = 1;
 
-        if (winner === 'draw') {
-            await updateStats(whiteId, 'draw');
-            await updateStats(blackId, 'draw');
-        } else if (winner === 'w') {
-            await updateStats(whiteId, 'win');
-            await updateStats(blackId, 'loss');
-        } else if (winner === 'b') {
-            await updateStats(whiteId, 'loss');
-            await updateStats(blackId, 'win');
+            const blackStreak = winner === 'b'
+                ? Math.max(1, (blackUser.stats?.currentStreak ?? 0) > 0 ? (blackUser.stats?.currentStreak ?? 0) + 1 : 1)
+                : winner === 'w'
+                    ? Math.min(-1, (blackUser.stats?.currentStreak ?? 0) < 0 ? (blackUser.stats?.currentStreak ?? 0) - 1 : -1)
+                    : 0;
+
+            await User.findByIdAndUpdate(blackId, {
+                $inc: blackStatsInc,
+                $set: {
+                    rating: result.black.newRating,
+                    ratingDeviation: result.black.newRd,
+                    'stats.currentStreak': blackStreak,
+                    lastActive: new Date()
+                },
+                $max: {
+                    peakRating: result.black.newRating,
+                    'stats.bestStreak': blackStreak
+                },
+                $push: {
+                    ratingHistory: {
+                        $each: [{ r: result.black.newRating, d: new Date() }],
+                        $slice: -30
+                    }
+                }
+            });
+
+            return { whiteChange: result.white.ratingChange, blackChange: result.black.ratingChange };
+        } catch (e) {
+            console.error(`[GameManager] Failed to update stats:`, e);
+            return null;
         }
     }
 

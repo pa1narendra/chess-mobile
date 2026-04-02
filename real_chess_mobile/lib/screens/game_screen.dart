@@ -496,37 +496,123 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
 
   Widget _buildStatusBanner(GameProvider game) {
     final isGameOver = game.gameStatus!.startsWith('Game Over');
-    final color = isGameOver ? AppColors.electricBlue : AppColors.tealAccent;
+
+    if (!isGameOver) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.tealAccent.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.tealAccent.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.hourglass_top_rounded, color: AppColors.tealAccent, size: 20),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(game.gameStatus!, style: const TextStyle(color: AppColors.tealAccent, fontSize: 14, fontWeight: FontWeight.w600), textAlign: TextAlign.center),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Parse result from status string
+    final status = game.gameStatus!;
+    final isDraw = status.contains('draw') || status.contains('Draw') || status.contains('stalemate');
+    final playerColor = game.playerColor;
+    final isWin = !isDraw && status.contains('Winner: $playerColor');
+    final isLoss = !isDraw && !isWin;
+
+    Color resultColor;
+    String resultTitle;
+    IconData resultIcon;
+
+    if (isDraw) {
+      resultColor = AppColors.amberWarning;
+      resultTitle = 'Draw';
+      resultIcon = Icons.handshake;
+    } else if (isWin) {
+      resultColor = AppColors.emeraldGreen;
+      resultTitle = 'Victory!';
+      resultIcon = Icons.emoji_events;
+    } else {
+      resultColor = AppColors.roseError;
+      resultTitle = 'Defeat';
+      resultIcon = Icons.close;
+    }
+
+    // Extract reason
+    String reason = '';
+    if (status.contains('checkmate')) reason = 'by checkmate';
+    else if (status.contains('timeout')) reason = 'on time';
+    else if (status.contains('resignation')) reason = 'by resignation';
+    else if (status.contains('stalemate')) reason = 'by stalemate';
+    else if (status.contains('agreement')) reason = 'by mutual agreement';
+    else if (status.contains('disconnection')) reason = 'by disconnection';
+
+    // Rating change
+    final ratingChanges = game.ratingChanges;
+    int? ratingChange;
+    if (ratingChanges != null && playerColor != null) {
+      final change = ratingChanges[playerColor];
+      if (change is num) ratingChange = change.toInt();
+    }
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.all(20),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3)),
+        color: resultColor.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: resultColor.withValues(alpha: 0.3)),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Column(
         children: [
-          Icon(
-            isGameOver ? Icons.emoji_events_rounded : Icons.hourglass_top_rounded,
-            color: color,
-            size: 20,
+          Icon(resultIcon, color: resultColor, size: 36),
+          const SizedBox(height: 8),
+          Text(
+            resultTitle,
+            style: TextStyle(color: resultColor, fontSize: 22, fontWeight: FontWeight.w700),
           ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(
-              game.gameStatus!,
-              style: TextStyle(
-                color: color,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-              textAlign: TextAlign.center,
+          if (reason.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(reason, style: TextStyle(color: resultColor.withValues(alpha: 0.7), fontSize: 14)),
             ),
-          ),
+          if (ratingChange != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceDark,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Rating ', style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+                  Icon(
+                    ratingChange >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                    color: ratingChange >= 0 ? AppColors.emeraldGreen : AppColors.roseError,
+                    size: 18,
+                  ),
+                  Text(
+                    ratingChange >= 0 ? '+$ratingChange' : '$ratingChange',
+                    style: TextStyle(
+                      color: ratingChange >= 0 ? AppColors.emeraldGreen : AppColors.roseError,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

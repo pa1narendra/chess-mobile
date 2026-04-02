@@ -7,6 +7,7 @@ import { cors } from '@elysiajs/cors';
 
 import { auth } from './auth';
 import { searchRoutes } from './routes/searchRoutes';
+import { apiRoutes } from './routes/apiRoutes';
 import { verifyToken } from './middleware/authMiddleware';
 
 connectDB();
@@ -75,12 +76,12 @@ async function fetchPlayerNames(game: any): Promise<{ whiteName: string; blackNa
     let blackName = 'Black';
 
     if (game?.userIds?.w) {
-        const u = await User.findById(game.userIds.w).select('username');
-        if (u) whiteName = u.username;
+        const u = await User.findById(game.userIds.w).select('username profile.displayName');
+        if (u) whiteName = (u as any).profile?.displayName || u.username;
     }
     if (game?.userIds?.b) {
-        const u = await User.findById(game.userIds.b).select('username');
-        if (u) blackName = u.username;
+        const u = await User.findById(game.userIds.b).select('username profile.displayName');
+        if (u) blackName = (u as any).profile?.displayName || u.username;
     }
 
     // Handle bot games
@@ -114,16 +115,17 @@ const app = new Elysia()
     .use(auth)
     .get('/', () => 'Chess Backend Running')
     .get('/health', () => ({ status: 'ok', uptime: process.uptime() }))
-    .use(searchRoutes);
+    .use(searchRoutes)
+    .use(apiRoutes);
 
 const gameManager = new GameManager(
     (gameId, result) => {
-        console.log(`[Main] GAME_OVER callback for ${gameId}, winner: ${result.winner}, reason: ${result.reason}`);
         const payload = JSON.stringify({
             type: 'GAME_OVER',
             winner: result.winner,
             reason: result.reason,
-            fen: result.fen
+            fen: result.fen,
+            ratingChanges: result.ratingChanges
         });
         if (app.server) {
             app.server.publish(gameId, payload);

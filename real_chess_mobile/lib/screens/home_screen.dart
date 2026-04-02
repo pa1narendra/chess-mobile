@@ -6,6 +6,9 @@ import '../api/socket_service.dart';
 import '../widgets/custom_button.dart';
 import '../main.dart';
 import 'game_screen.dart';
+import 'game_history_screen.dart';
+import 'leaderboard_screen.dart';
+import 'profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -149,6 +152,61 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 const SizedBox(height: 32),
 
+                // Explore Section
+                Row(
+                  children: [
+                    Container(
+                      width: 4,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: AppColors.electricBlue,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      'Explore',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildNavCard(
+                        icon: Icons.history_rounded,
+                        label: 'History',
+                        color: AppColors.purpleAccent,
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const GameHistoryScreen())),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildNavCard(
+                        icon: Icons.leaderboard_rounded,
+                        label: 'Leaderboard',
+                        color: AppColors.amberWarning,
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaderboardScreen())),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildNavCard(
+                        icon: Icons.person_rounded,
+                        label: 'Profile',
+                        color: AppColors.tealAccent,
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen())),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 32),
+
                 // Stats Section (if available)
                 if (auth.user != null && auth.user!['gamesPlayed'] != null && auth.user!['gamesPlayed'] > 0)
                   _buildStatsSection(context, auth),
@@ -219,6 +277,32 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildNavCard({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceDark,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.borderColor),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 28),
+            const SizedBox(height: 8),
+            Text(label, style: TextStyle(color: AppColors.textSecondary, fontSize: 12, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildWelcomeCard(BuildContext context, AuthProvider auth) {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -242,7 +326,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             child: Center(
               child: Text(
-                (auth.user?['username'] ?? 'P')[0].toUpperCase(),
+                (auth.user?['profile']?['displayName'] ?? auth.user?['username'] ?? 'P')[0].toUpperCase(),
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 24,
@@ -265,7 +349,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  auth.user?['username'] ?? 'Player',
+                  auth.user?['profile']?['displayName'] ?? auth.user?['username'] ?? 'Player',
                   style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 20,

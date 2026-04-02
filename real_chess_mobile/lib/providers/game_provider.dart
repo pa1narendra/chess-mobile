@@ -66,9 +66,13 @@ class GameProvider with ChangeNotifier {
   // Analysis state
   bool _isAnalyzing = false;
   Map<String, dynamic>? _analysisResults;
+
+  // Post-game rating change
+  Map<String, dynamic>? _ratingChanges; // { w: int, b: int }
   
   bool get isAnalyzing => _isAnalyzing;
   Map<String, dynamic>? get analysisResults => _analysisResults;
+  Map<String, dynamic>? get ratingChanges => _ratingChanges;
 
   // Tap-to-move state
   String? _selectedSquare;
@@ -396,12 +400,16 @@ class GameProvider with ChangeNotifier {
         _gameStatus = 'Game Over: $reason - Winner: $winner';
         _opponentDisconnected = false;
         _disconnectionMessage = null;
+        // Store rating changes if provided
+        if (msg['ratingChanges'] != null) {
+          _ratingChanges = Map<String, dynamic>.from(msg['ratingChanges']);
+        }
         // Clear saved game since it's over
         _clearActiveGame();
-        
+
         _audioService.playGameOver();
         VibrationService.heavy();
-        
+
         notifyListeners();
         break;
 
@@ -858,6 +866,7 @@ class GameProvider with ChangeNotifier {
     _selectedSquare = null;
     _legalMoves = [];
     _captureMoves = [];
+    _ratingChanges = null;
     _stopLocalTimer();
     controller.resetBoard();
     // Clear saved game when explicitly leaving

@@ -115,6 +115,19 @@ class AuthProvider with ChangeNotifier {
     await login(username, password);
   }
 
+  Future<void> refreshUser() async {
+    if (_token == null) return;
+    try {
+      final result = await ApiService.getMe(_token!);
+      if (result['_id'] != null || result['username'] != null) {
+        _user = result;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user_data', jsonEncode(result));
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
   Future<void> logout() async {
     // Notify any listeners to disconnect (e.g., socket)
     onLogout?.call();
