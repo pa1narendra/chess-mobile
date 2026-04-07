@@ -139,7 +139,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
           children: [
             Icon(Icons.settings, color: AppColors.tealAccent),
             const SizedBox(width: 8),
-            const Text("Server Settings"),
+            const Flexible(child: Text("Server Settings")),
           ],
         ),
         content: Column(
@@ -203,7 +203,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
           children: [
             Icon(Icons.wifi_off, color: AppColors.roseError),
             const SizedBox(width: 8),
-            const Text("Connection Failed"),
+            const Flexible(child: Text("Connection Failed")),
           ],
         ),
         content: Column(

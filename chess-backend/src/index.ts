@@ -313,7 +313,7 @@ app.ws('/ws', {
                 return;
             }
 
-            const result = gameManager.makeMove(msg.gameId, playerId, { from: msg.from, to: msg.to, promotion: msg.promotion });
+            const result = await gameManager.makeMove(msg.gameId, playerId, { from: msg.from, to: msg.to, promotion: msg.promotion });
 
             if (result.success && result.fen) {
                 const payload = JSON.stringify({

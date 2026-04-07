@@ -31,6 +31,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (auth.token != null) {
       game.initSocket(auth.token!);
+      // Refresh user data to get latest rating and profile
+      auth.refreshUser();
     }
 
     auth.onLogout = () {
@@ -350,6 +352,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 4),
                 Text(
                   auth.user?['profile']?['displayName'] ?? auth.user?['username'] ?? 'Player',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
                     fontSize: 20,
@@ -422,15 +426,14 @@ class _HomeScreenState extends State<HomeScreen> {
             border: Border.all(color: AppColors.borderColor),
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildStatItem('Played', gamesPlayed.toString(), AppColors.electricBlue),
+              Expanded(child: _buildStatItem('Played', gamesPlayed.toString(), AppColors.electricBlue)),
               _buildStatDivider(),
-              _buildStatItem('Wins', wins.toString(), AppColors.emeraldGreen),
+              Expanded(child: _buildStatItem('Wins', wins.toString(), AppColors.emeraldGreen)),
               _buildStatDivider(),
-              _buildStatItem('Losses', losses.toString(), AppColors.roseError),
+              Expanded(child: _buildStatItem('Losses', losses.toString(), AppColors.roseError)),
               _buildStatDivider(),
-              _buildStatItem('Draws', draws.toString(), AppColors.amberWarning),
+              Expanded(child: _buildStatItem('Draws', draws.toString(), AppColors.amberWarning)),
             ],
           ),
         ),
@@ -534,13 +537,13 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Icon(Icons.timer_rounded, color: AppColors.amberWarning),
             const SizedBox(width: 8),
-            const Text('Select Time Control'),
+            const Flexible(child: Text('Select Time Control')),
           ],
         ),
         content: SizedBox(
           width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          child: ListView(
+            shrinkWrap: true,
             children: timeControls.map((tc) {
               final color = tc['color'] as Color;
               return Container(
@@ -600,12 +603,14 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Icon(Icons.smart_toy_rounded, color: AppColors.electricBlue),
             const SizedBox(width: 8),
-            const Text('Select Difficulty'),
+            const Flexible(child: Text('Select Difficulty')),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
             // Local play indicator
             Container(
               padding: const EdgeInsets.all(12),
@@ -634,6 +639,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildDifficultyOption(ctx, game, 4, 'Hard', 'For experienced players', Colors.deepOrange),
             _buildDifficultyOption(ctx, game, 5, 'Expert', 'Maximum difficulty', AppColors.roseError),
           ],
+        ),
         ),
         actions: [
           TextButton(
@@ -693,7 +699,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Icon(Icons.group_rounded, color: AppColors.tealAccent),
             const SizedBox(width: 8),
-            const Text('Play with Friends'),
+            const Flexible(child: Text('Play with Friends')),
           ],
         ),
         content: Column(
@@ -771,7 +777,7 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Icon(Icons.input_rounded, color: AppColors.emeraldGreen),
             const SizedBox(width: 8),
-            const Text('Join Game'),
+            const Flexible(child: Text('Join Game')),
           ],
         ),
         content: Column(

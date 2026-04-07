@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 import 'package:flutter_chess_board/flutter_chess_board.dart' hide Color;
 import '../providers/game_provider.dart';
 import '../api/socket_service.dart';
+import '../widgets/custom_chess_board.dart';
 import '../main.dart';
+import 'analysis_screen.dart';
 
 class GameScreen extends StatefulWidget {
   const GameScreen({super.key});
@@ -15,6 +17,7 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateMixin {
   bool _isDialogShowing = false;
+  bool _hasShownGameOverOverlay = false;
   late AnimationController _pulseController;
   StreamSubscription? _drawOfferSubscription;
 
@@ -123,6 +126,17 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   Widget build(BuildContext context) {
     return Consumer<GameProvider>(
       builder: (context, game, child) {
+        // Trigger post-game overlay once
+        final isGameOver = game.gameStatus != null && game.gameStatus!.startsWith('Game Over');
+        if (isGameOver && !_hasShownGameOverOverlay) {
+          _hasShownGameOverOverlay = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _showGameOverOverlay(context, game);
+          });
+        } else if (!isGameOver) {
+          _hasShownGameOverOverlay = false;
+        }
+
         return Scaffold(
           appBar: AppBar(
             leading: IconButton(
@@ -208,43 +222,15 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             },
             child: Column(
               children: [
-                // Error message display
+                // Top section: banners, status, analysis — shrinkable when game over
+                // Error and disconnection banners (non-game-over)
                 if (game.errorMessage != null)
                   _buildErrorBanner(game),
-
-                // Opponent disconnection banner
                 if (game.opponentDisconnected)
                   _buildDisconnectionBanner(game),
-
-                // Game status display
-                if (game.gameStatus != null)
+                // Non-game-over status (e.g., "Waiting for opponent")
+                if (game.gameStatus != null && !game.gameStatus!.startsWith('Game Over'))
                   _buildStatusBanner(game),
-
-                // Analysis button
-                if (game.gameStatus != null && 
-                    game.gameStatus!.startsWith('Game Over') && 
-                    !game.isOfflineGame && 
-                    game.gameId != null &&
-                    game.analysisResults == null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: ElevatedButton.icon(
-                      onPressed: game.isAnalyzing ? null : () => game.analyzeGame(),
-                      icon: game.isAnalyzing 
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) 
-                        : const Icon(Icons.analytics_outlined),
-                      label: Text(game.isAnalyzing ? 'Analyzing...' : 'Analyze Game'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.electricBlue,
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 48),
-                      ),
-                    ),
-                  ),
-
-                // Analysis Results
-                if (game.analysisResults != null)
-                   _buildAnalysisResults(game),
 
                 // Move history display
                 _buildMoveHistory(game),
@@ -300,19 +286,15 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                                       game.selectSquare(square);
                                     }
                                   } : null,
-                                  child: ChessBoard(
+                                  child: CustomChessBoard(
                                     controller: game.controller,
                                     enableUserMoves: game.currentTurn == game.playerColor && !game.isViewingHistory,
-                                    boardColor: BoardColor.brown,
                                     boardOrientation: game.playerColor == 'w'
                                         ? PlayerColor.white
                                         : PlayerColor.black,
                                     onMove: () {
                                       debugPrint('[GameScreen] onMove callback fired! isOfflineGame: ${game.isOfflineGame}');
-                                      // Clear selection after any move
                                       game.clearSelection();
-
-                                      // Use a non-async approach to avoid callback issues
                                       _handleMoveCallback(game);
                                     },
                                   ),
@@ -368,6 +350,147 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           ),
         );
       },
+    );
+  }
+
+  void _showGameOverOverlay(BuildContext context, GameProvider game) {
+    final status = game.gameStatus ?? '';
+    final isDraw = status.contains('draw') || status.contains('Draw') || status.contains('stalemate');
+    final playerColor = game.playerColor;
+    final isWin = !isDraw && status.contains('Winner: $playerColor');
+
+    Color resultColor;
+    String resultTitle;
+    IconData resultIcon;
+
+    if (isDraw) {
+      resultColor = AppColors.amberWarning;
+      resultTitle = 'Draw';
+      resultIcon = Icons.handshake;
+    } else if (isWin) {
+      resultColor = AppColors.emeraldGreen;
+      resultTitle = 'Victory!';
+      resultIcon = Icons.emoji_events;
+    } else {
+      resultColor = AppColors.roseError;
+      resultTitle = 'Defeat';
+      resultIcon = Icons.close;
+    }
+
+    String reason = '';
+    if (status.contains('checkmate')) reason = 'by checkmate';
+    else if (status.contains('timeout')) reason = 'on time';
+    else if (status.contains('resignation')) reason = 'by resignation';
+    else if (status.contains('stalemate')) reason = 'by stalemate';
+    else if (status.contains('agreement')) reason = 'by mutual agreement';
+    else if (status.contains('disconnection')) reason = 'by disconnection';
+
+    int? ratingChange;
+    final ratingChanges = game.ratingChanges;
+    if (ratingChanges != null && playerColor != null) {
+      final change = ratingChanges[playerColor];
+      if (change is num) ratingChange = change.toInt();
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isDismissible: true,
+      enableDrag: true,
+      backgroundColor: AppColors.surfaceDark,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+        child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.borderColor, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(height: 20),
+            Icon(resultIcon, color: resultColor, size: 48),
+            const SizedBox(height: 12),
+            Text(resultTitle, style: TextStyle(color: resultColor, fontSize: 28, fontWeight: FontWeight.w800)),
+            if (reason.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(reason, style: TextStyle(color: resultColor.withValues(alpha: 0.7), fontSize: 15)),
+              ),
+            if (ratingChange != null) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                decoration: BoxDecoration(color: AppColors.deepDark, borderRadius: BorderRadius.circular(10)),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Rating ', style: TextStyle(color: AppColors.textSecondary, fontSize: 15)),
+                    Icon(
+                      ratingChange >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                      color: ratingChange >= 0 ? AppColors.emeraldGreen : AppColors.roseError,
+                      size: 20,
+                    ),
+                    Text(
+                      ratingChange >= 0 ? '+$ratingChange' : '$ratingChange',
+                      style: TextStyle(color: ratingChange >= 0 ? AppColors.emeraldGreen : AppColors.roseError, fontSize: 22, fontWeight: FontWeight.w700),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 28),
+            // Action buttons
+            Row(
+              children: [
+                // Analyze (only for online games)
+                if (!game.isOfflineGame && game.gameId != null)
+                  Expanded(
+                    child: _overlayButton(Icons.analytics_outlined, 'Analyze', AppColors.electricBlue, () {
+                      Navigator.pop(ctx);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => AnalysisScreen(gameId: game.gameId!)));
+                    }),
+                  ),
+                if (!game.isOfflineGame && game.gameId != null) const SizedBox(width: 12),
+                // Home
+                Expanded(
+                  child: _overlayButton(Icons.home_rounded, 'Home', AppColors.tealAccent, () {
+                    Navigator.pop(ctx);
+                    if (game.isOfflineGame) {
+                      game.stopOfflineGame();
+                    } else {
+                      game.leaveGame();
+                    }
+                    Navigator.of(context).pop();
+                  }),
+                ),
+              ],
+            ),
+          ],
+        ),
+        ),
+      ),
+    );
+  }
+
+  Widget _overlayButton(IconData icon, String label, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 24),
+            const SizedBox(height: 4),
+            Text(label, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1255,7 +1378,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           children: [
             Icon(Icons.check_circle, color: AppColors.emeraldGreen),
             const SizedBox(width: 8),
-            const Text('Great game! No major mistakes found.'),
+            const Flexible(child: Text('Great game! No major mistakes found.')),
           ],
         ),
       );
@@ -1293,9 +1416,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         children: [
           Row(
             children: [
-              Icon(Icons.query_stats, color: AppColors.electricBlue),
+              Icon(Icons.query_stats, color: AppColors.electricBlue, size: 20),
               const SizedBox(width: 8),
-              const Text('Analysis Results', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const Flexible(child: Text('Analysis Results', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
             ],
           ),
           const SizedBox(height: 12),
@@ -1357,7 +1480,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: color.withOpacity(0.2),
+                            color: color.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(

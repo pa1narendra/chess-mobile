@@ -103,6 +103,9 @@ class AuthProvider with ChangeNotifier {
     }
 
     notifyListeners();
+
+    // Immediately fetch full user data from server (login returns a subset)
+    refreshUser();
   }
 
   Future<void> register(String username, String email, String password) async {

@@ -128,6 +128,37 @@ class ApiService {
     }
   }
   // --- Game History ---
+  static Future<Map<String, dynamic>> clearGameHistory(String token) async {
+    final url = '$baseUrl/api/games/history';
+    try {
+      final response = await http.delete(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to clear history', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to clear history');
+    }
+  }
+
+  static Future<Map<String, dynamic>> getGameAnalysis(String gameId) async {
+    final url = '$baseUrl/api/games/$gameId/analysis';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Analysis not available', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch analysis');
+    }
+  }
+
   static Future<Map<String, dynamic>> getGameHistory(String token, {int page = 1, int pageSize = 20}) async {
     final url = '$baseUrl/api/games/history?page=$page&pageSize=$pageSize';
     try {

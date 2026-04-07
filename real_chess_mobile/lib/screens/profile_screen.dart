@@ -180,6 +180,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           const SizedBox(height: 12),
           Text(
             displayName?.isNotEmpty == true ? displayName! : username,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
             style: const TextStyle(color: AppColors.textPrimary, fontSize: 22, fontWeight: FontWeight.w700),
           ),
           if (displayName?.isNotEmpty == true)
@@ -188,7 +190,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           Text('Rank #$rank', style: const TextStyle(color: AppColors.tealAccent, fontSize: 14, fontWeight: FontWeight.w500)),
           if (bio?.isNotEmpty == true) ...[
             const SizedBox(height: 12),
-            Text(bio!, style: const TextStyle(color: AppColors.textSecondary, fontSize: 14), textAlign: TextAlign.center),
+            Text(bio!, maxLines: 4, overflow: TextOverflow.ellipsis, style: const TextStyle(color: AppColors.textSecondary, fontSize: 14), textAlign: TextAlign.center),
           ],
         ],
       ),
@@ -209,13 +211,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         border: Border.all(color: AppColors.borderColor),
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _buildRatingStat('Rating', '$rating', AppColors.tealAccent),
+          Expanded(child: _buildRatingStat('Rating', '$rating', AppColors.tealAccent)),
           Container(width: 1, height: 40, color: AppColors.borderColor),
-          _buildRatingStat('Peak', '$peakRating', AppColors.amberWarning),
+          Expanded(child: _buildRatingStat('Peak', '$peakRating', AppColors.amberWarning)),
           Container(width: 1, height: 40, color: AppColors.borderColor),
-          _buildRatingStat('RD', '$rd', AppColors.textSecondary),
+          Expanded(child: _buildRatingStat('RD', '$rd', AppColors.textSecondary)),
         ],
       ),
     );
@@ -285,7 +286,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _buildStatItem(String label, String value, Color color) {
     return Column(
       children: [
-        Text(value, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.w700)),
+        Text(value, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis),
         const SizedBox(height: 4),
         Text(label, style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
       ],

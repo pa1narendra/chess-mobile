@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../providers/auth_provider.dart';
 import '../api/api_service.dart';
 import 'game_detail_screen.dart';
+import 'analysis_screen.dart';
 import '../main.dart';
 
 class GameHistoryScreen extends StatefulWidget {
@@ -223,9 +224,12 @@ class _GameHistoryScreenState extends State<GameHistoryScreen> {
                         style: TextStyle(color: resultColor, fontWeight: FontWeight.w600, fontSize: 15),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        'vs $opponentName',
-                        style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
+                      Flexible(
+                        child: Text(
+                          'vs $opponentName',
+                          style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                       if (isBot) ...[
                         const SizedBox(width: 6),
@@ -241,36 +245,37 @@ class _GameHistoryScreenState extends State<GameHistoryScreen> {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Icon(
-                        playerColor == 'w' ? Icons.circle : Icons.circle_outlined,
-                        color: playerColor == 'w' ? Colors.white : AppColors.textMuted,
-                        size: 12,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '$reason  |  $movesCount moves',
-                        style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
-                      ),
-                      if (accuracy != null) ...[
-                        const SizedBox(width: 8),
-                        Text(
-                          '${accuracy[playerColor]}% accuracy',
-                          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                        ),
-                      ],
-                    ],
+                  Text(
+                    '${playerColor == 'w' ? '\u25CB' : '\u25CF'} $reason  |  $movesCount moves${accuracy != null ? '  |  ${accuracy[playerColor]}%' : ''}',
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
-            // Date
-            if (endedAt != null)
-              Text(
-                DateFormat('MMM d').format(endedAt),
-                style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
-              ),
+            // Date + analyze button
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (endedAt != null)
+                  Text(
+                    DateFormat('MMM d').format(endedAt),
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+                  ),
+                if (gameId != null && !isBot)
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => AnalysisScreen(gameId: gameId),
+                      ));
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Icon(Icons.analytics_outlined, color: AppColors.electricBlue, size: 20),
+                    ),
+                  ),
+              ],
+            ),
           ],
         ),
       ),

@@ -671,7 +671,7 @@ export class GameManager {
                 // Let's refactor makeMove to allow internal calls or just duplicate logic slightly for safety.
                 // Actually, let's just use 'bot' as playerId since we set it in createGame.
 
-                const result = this.makeMove(gameId, 'bot', { from, to, promotion });
+                const result = await this.makeMove(gameId, 'bot', { from, to, promotion });
 
                 if (result.success) {
                     // We need to broadcast this move!

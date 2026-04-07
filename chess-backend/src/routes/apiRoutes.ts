@@ -75,6 +75,22 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
         })
     })
 
+    // DELETE /api/games/history - Clear all finished games for authenticated user
+    .delete('/games/history', async ({ headers, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        const result = await Game.deleteMany({
+            $or: [{ 'userIds.w': user.id }, { 'userIds.b': user.id }],
+            status: 'finished'
+        });
+
+        return { success: true, deleted: result.deletedCount };
+    })
+
     // GET /api/games/:gameId/details - Get full game details for replay
     .get('/games/:gameId/details', async ({ params, set }) => {
         const game = await Game.findOne({ gameId: params.gameId })

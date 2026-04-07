@@ -54,11 +54,13 @@ const gameSchema = new mongoose.Schema({
 
     // Result
     result: {
-        winner: { type: String, enum: ['w', 'b', null] },  // null = draw
+        winner: { type: String, enum: ['w', 'b', 'draw', null] },
         reason: {
             type: String,
             enum: ['checkmate', 'resignation', 'timeout', 'stalemate',
-                   'insufficient', 'repetition', 'fifty-move', 'agreement', 'abandoned']
+                   'insufficient', 'repetition', 'fifty-move', 'agreement',
+                   'mutual agreement', 'disconnection', 'abandoned',
+                   'draw', 'threefold repetition', 'insufficient material']
         }
     },
 

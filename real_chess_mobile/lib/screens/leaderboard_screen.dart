@@ -152,11 +152,15 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 children: [
                   Text(
                     username,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
                     style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600, fontSize: 15),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     '$gamesPlayed games  |  $winRate% win rate',
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
                     style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
                   ),
                 ],
