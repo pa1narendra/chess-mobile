@@ -43,7 +43,8 @@ export type WebSocketMessage =
     | { type: 'CANCEL_QUEUE'; token?: string }
     | { type: 'SYNC_TIME'; gameId: string; token?: string }
     | { type: 'REJOIN_GAME'; token?: string }
-    | { type: 'SUBSCRIBE_GAME'; gameId: string };
+    | { type: 'SUBSCRIBE_GAME'; gameId: string }
+    | { type: 'CHAT_MESSAGE'; gameId: string; message: string; token?: string };
 
 export type WebSocketResponse =
     | { type: 'GAME_CREATED'; gameId: string; color: PlayerColor; fen: string; timeRemaining: { w: number; b: number }; history: string[] }
@@ -52,4 +53,5 @@ export type WebSocketResponse =
     | { type: 'GAME_OVER'; winner: string | null; reason: string | null; fen?: string }
     | { type: 'ERROR'; message: string }
     | { type: 'OPPONENT_DISCONNECTED' }
-    | { type: 'PENDING_GAMES_UPDATE'; games: { id: string; players: { w?: string; b?: string }; timeControl: number }[] };
+    | { type: 'PENDING_GAMES_UPDATE'; games: { id: string; players: { w?: string; b?: string }; timeControl: number }[] }
+    | { type: 'CHAT_MESSAGE'; gameId: string; sender: PlayerColor; senderName: string; message: string; timestamp: number };

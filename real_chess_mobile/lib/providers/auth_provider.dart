@@ -128,7 +128,9 @@ class AuthProvider with ChangeNotifier {
         await prefs.setString('user_data', jsonEncode(result));
         notifyListeners();
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Auth] refreshUser failed: $e');
+    }
   }
 
   Future<void> logout() async {

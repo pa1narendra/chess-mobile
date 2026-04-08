@@ -106,6 +106,12 @@ function isValidGameId(id: any): boolean {
     return typeof id === 'string' && /^\d{6}$/.test(id);
 }
 
+const BLOCKED_WORDS = ['fuck', 'shit', 'bitch', 'damn', 'dick', 'bastard', 'cunt', 'slut', 'whore', 'nigger', 'faggot', 'retard'];
+function containsProfanity(text: string): boolean {
+    const lower = text.toLowerCase();
+    return BLOCKED_WORDS.some(word => lower.includes(word));
+}
+
 // --- App setup ---
 const app = new Elysia()
     .use(cors({
@@ -143,18 +149,7 @@ const gameManager = new GameManager(
             if (app.server) {
                 app.server.publish(gameId, payload);
             }
-
-            if (result.gameOver) {
-                const gameOverPayload = JSON.stringify({
-                    type: 'GAME_OVER',
-                    winner: result.winner,
-                    reason: result.reason,
-                    fen: result.fen
-                });
-                if (app.server) {
-                    app.server.publish(gameId, gameOverPayload);
-                }
-            }
+            // Game-over is handled by the onGameOver callback — no duplication here
         }
     },
     (gameId, playerId, color) => {
@@ -212,7 +207,7 @@ app.ws('/ws', {
     async message(ws, message: any) {
         // Rate limit check
         if (!checkRateLimit(ws.id)) {
-            ws.send({ type: 'ERROR', message: 'Rate limit exceeded. Slow down.' });
+            ws.send(JSON.stringify({ type: 'ERROR', message: 'Rate limit exceeded. Slow down.' }));
             return;
         }
 
@@ -234,14 +229,6 @@ app.ws('/ws', {
 
             const game = gameManager.getGame(gameId);
             const { whiteName, blackName } = await fetchPlayerNames(game);
-
-            // Override name for creator
-            if (userId) {
-                const user = await User.findById(userId).select('username');
-                if (user) {
-                    if (game?.players.w === playerId) Object.assign({ whiteName: user.username });
-                }
-            }
 
             ws.send({
                 type: 'GAME_CREATED',
@@ -480,8 +467,43 @@ app.ws('/ws', {
                 ws.send({ type: 'REJOIN_FAILED', message: 'No active game found' });
             }
 
+        } else if (msg.type === 'CHAT_MESSAGE') {
+            if (!isValidGameId(msg.gameId)) return;
+            const playerId = users.get(ws.id);
+            if (!playerId) return;
+
+            const game = gameManager.getGame(msg.gameId);
+            if (!game || game.status !== 'active') return;
+            if (game.players.w !== playerId && game.players.b !== playerId) return;
+
+            const chatMessage = typeof msg.message === 'string' ? msg.message.trim() : '';
+            if (chatMessage.length === 0 || chatMessage.length > 200) return;
+            if (containsProfanity(chatMessage)) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Message contains inappropriate language' }));
+                return;
+            }
+
+            const senderColor = game.players.w === playerId ? 'w' : 'b';
+            let senderName = senderColor === 'w' ? 'White' : 'Black';
+            const userId = authenticatedUsers.get(ws.id);
+            if (userId) {
+                const u = await User.findById(userId).select('username profile.displayName');
+                if (u) senderName = (u as any).profile?.displayName || u.username;
+            }
+
+            const payload = JSON.stringify({
+                type: 'CHAT_MESSAGE',
+                gameId: msg.gameId,
+                sender: senderColor,
+                senderName,
+                message: chatMessage,
+                timestamp: Date.now()
+            });
+            ws.publish(msg.gameId, payload);
+            ws.send(payload);
+
         } else {
-            ws.send({ type: 'ERROR', message: `Unknown message type: ${msg.type}` });
+            ws.send(JSON.stringify({ type: 'ERROR', message: `Unknown message type: ${msg.type}` }));
         }
     },
     close(ws) {

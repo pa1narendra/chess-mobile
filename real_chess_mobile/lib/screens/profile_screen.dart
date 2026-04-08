@@ -83,7 +83,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _isEditing = false;
         _isSaving = false;
       });
-      _loadProfile();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

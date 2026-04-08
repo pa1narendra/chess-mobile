@@ -724,11 +724,11 @@ export class GameManager {
 
     getPendingGames() {
         return Array.from(this.games.values())
-            .filter(game => game.status === 'active' && (!game.players.b || !game.players.w) && !game.isPrivate)
+            .filter(game => (game.status === 'active' || game.status === 'waiting') && (!game.players.b || !game.players.w) && !game.isPrivate)
             .map(game => ({
                 id: game.id,
                 players: game.players,
-                timeControl: game.timeRemaining.w / (60 * 1000) // Assuming initial time was symmetric
+                timeControl: Math.round(game.timeRemaining.w / (60 * 1000))
             }));
     }
 
@@ -967,18 +967,19 @@ export class GameManager {
                 winnerColor
             );
 
-            // Update white player
+            // Helper: calculate new streak value
+            const calcStreak = (currentStreak: number, won: boolean, lost: boolean): number => {
+                if (won) return currentStreak > 0 ? currentStreak + 1 : 1;
+                if (lost) return currentStreak < 0 ? currentStreak - 1 : -1;
+                return 0; // draw resets streak
+            };
+
             const whiteStatsInc: any = { 'stats.games': 1 };
             if (winner === 'w') whiteStatsInc['stats.wins'] = 1;
             else if (winner === 'b') whiteStatsInc['stats.losses'] = 1;
             else whiteStatsInc['stats.draws'] = 1;
 
-            // Update streak
-            const whiteStreak = winner === 'w'
-                ? Math.max(1, (whiteUser.stats?.currentStreak ?? 0) > 0 ? (whiteUser.stats?.currentStreak ?? 0) + 1 : 1)
-                : winner === 'b'
-                    ? Math.min(-1, (whiteUser.stats?.currentStreak ?? 0) < 0 ? (whiteUser.stats?.currentStreak ?? 0) - 1 : -1)
-                    : 0;
+            const whiteStreak = calcStreak(whiteUser.stats?.currentStreak ?? 0, winner === 'w', winner === 'b');
 
             await User.findByIdAndUpdate(whiteId, {
                 $inc: whiteStatsInc,
@@ -1006,11 +1007,7 @@ export class GameManager {
             else if (winner === 'w') blackStatsInc['stats.losses'] = 1;
             else blackStatsInc['stats.draws'] = 1;
 
-            const blackStreak = winner === 'b'
-                ? Math.max(1, (blackUser.stats?.currentStreak ?? 0) > 0 ? (blackUser.stats?.currentStreak ?? 0) + 1 : 1)
-                : winner === 'w'
-                    ? Math.min(-1, (blackUser.stats?.currentStreak ?? 0) < 0 ? (blackUser.stats?.currentStreak ?? 0) - 1 : -1)
-                    : 0;
+            const blackStreak = calcStreak(blackUser.stats?.currentStreak ?? 0, winner === 'b', winner === 'w');
 
             await User.findByIdAndUpdate(blackId, {
                 $inc: blackStatsInc,
@@ -1105,7 +1102,7 @@ export class GameManager {
                 players: gameDB.players,
                 // @ts-ignore
                 userIds: gameDB.userIds || {},
-                history: gameDB.moves.map(m => m.san),
+                history: gameDB.moves as string[],
                 turn: 'w', // irrelevant
                 timeRemaining: { w: 0, b: 0 },
                 lastMoveTime: 0,

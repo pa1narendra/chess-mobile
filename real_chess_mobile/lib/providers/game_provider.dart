@@ -14,6 +14,22 @@ import '../services/vibration_service.dart';
 const String _activeGameKey = 'active_game_id';
 const String _playerColorKey = 'player_color';
 
+class ChatMessage {
+  final String sender;
+  final String senderName;
+  final String message;
+  final int timestamp;
+
+  ChatMessage({required this.sender, required this.senderName, required this.message, required this.timestamp});
+
+  factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
+    sender: json['sender'] ?? '',
+    senderName: json['senderName'] ?? 'Unknown',
+    message: json['message'] ?? '',
+    timestamp: json['timestamp'] ?? DateTime.now().millisecondsSinceEpoch,
+  );
+}
+
 class GameProvider with ChangeNotifier {
   SocketService? _socket;
   ChessBoardController controller = ChessBoardController();
@@ -69,10 +85,18 @@ class GameProvider with ChangeNotifier {
 
   // Post-game rating change
   Map<String, dynamic>? _ratingChanges; // { w: int, b: int }
+
+  // Chat state
+  List<ChatMessage> _chatMessages = [];
+  int _unreadChatCount = 0;
+  bool _isChatOpen = false;
   
   bool get isAnalyzing => _isAnalyzing;
   Map<String, dynamic>? get analysisResults => _analysisResults;
   Map<String, dynamic>? get ratingChanges => _ratingChanges;
+  List<ChatMessage> get chatMessages => _chatMessages;
+  int get unreadChatCount => _unreadChatCount;
+  bool get isChatOpen => _isChatOpen;
 
   // Tap-to-move state
   String? _selectedSquare;
@@ -375,7 +399,6 @@ class GameProvider with ChangeNotifier {
           final fenParts = fen.split(' ');
           if (fenParts.length > 1) {
             _currentTurn = fenParts[1];
-            _currentTurn = fenParts[1];
           }
           
           // Play move sound/haptics
@@ -590,6 +613,12 @@ class GameProvider with ChangeNotifier {
       case 'OPPONENT_RECONNECTED':
         _opponentDisconnected = false;
         _disconnectionMessage = null;
+        notifyListeners();
+        break;
+
+      case 'CHAT_MESSAGE':
+        _chatMessages.add(ChatMessage.fromJson(msg));
+        if (!_isChatOpen) _unreadChatCount++;
         notifyListeners();
         break;
     }
@@ -855,6 +884,21 @@ class GameProvider with ChangeNotifier {
   }
 
 
+  void sendChatMessage(String message) {
+    if (_socket == null || !_isInGame || _gameId == null) return;
+    if (_gameStatus != null && _gameStatus!.startsWith('Game Over')) return;
+    if (_isOfflineGame) return;
+    final trimmed = message.trim();
+    if (trimmed.isEmpty || trimmed.length > 200) return;
+    _socket!.send({'type': 'CHAT_MESSAGE', 'gameId': _gameId, 'message': trimmed, 'token': _token});
+  }
+
+  void setChatOpen(bool open) {
+    _isChatOpen = open;
+    if (open) _unreadChatCount = 0;
+    notifyListeners();
+  }
+
   void leaveGame() {
     _isInGame = false;
     _isUntimedGame = false;
@@ -867,6 +911,9 @@ class GameProvider with ChangeNotifier {
     _legalMoves = [];
     _captureMoves = [];
     _ratingChanges = null;
+    _chatMessages = [];
+    _unreadChatCount = 0;
+    _isChatOpen = false;
     _stopLocalTimer();
     controller.resetBoard();
     // Clear saved game when explicitly leaving

@@ -132,6 +132,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
   Future<void> _showConfigDialog() async {
     final ipController = TextEditingController(text: Config.serverIp);
 
+    try {
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -190,11 +191,15 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         ],
       ),
     );
+    } finally {
+      ipController.dispose();
+    }
   }
 
   Future<void> _showConnectionErrorDialog() async {
     final ipController = TextEditingController(text: Config.serverIp);
 
+    try {
     await showDialog(
       context: context,
       barrierDismissible: false,
@@ -274,6 +279,9 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         ],
       ),
     );
+    } finally {
+      ipController.dispose();
+    }
   }
 
   @override

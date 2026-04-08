@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:flutter_chess_board/flutter_chess_board.dart' hide Color;
 import '../providers/game_provider.dart';
 import '../api/socket_service.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../widgets/custom_chess_board.dart';
 import '../main.dart';
 import 'analysis_screen.dart';
@@ -163,6 +164,32 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   ),
                   child: Icon(Icons.computer_rounded, color: AppColors.purpleAccent, size: 20),
                 ),
+              if (!game.isOfflineGame && game.isInGame)
+                Stack(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.chat_bubble_outline_rounded),
+                      onPressed: () => _openChatSheet(context, game),
+                      tooltip: 'Chat',
+                    ),
+                    if (game.unreadChatCount > 0)
+                      Positioned(
+                        right: 4,
+                        top: 4,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(color: AppColors.roseError, shape: BoxShape.circle),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Text(
+                            game.unreadChatCount > 9 ? '9+' : '${game.unreadChatCount}',
+                            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              if (!(game.gameStatus != null && game.gameStatus!.startsWith('Game Over')))
               PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert_rounded),
                 onSelected: (value) {
@@ -351,6 +378,17 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         );
       },
     );
+  }
+
+  void _openChatSheet(BuildContext context, GameProvider game) {
+    game.setChatOpen(true);
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surfaceDark,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => _ChatSheet(game: game),
+    ).whenComplete(() => game.setChatOpen(false));
   }
 
   void _showGameOverOverlay(BuildContext context, GameProvider game) {
@@ -1536,6 +1574,211 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           style: TextStyle(fontSize: 12, color: AppColors.textMuted),
         ),
       ],
+    );
+  }
+}
+
+class _ChatSheet extends StatefulWidget {
+  final GameProvider game;
+  const _ChatSheet({required this.game});
+  @override
+  State<_ChatSheet> createState() => _ChatSheetState();
+}
+
+class _ChatSheetState extends State<_ChatSheet> {
+  final _controller = TextEditingController();
+  final _scrollController = ScrollController();
+  final _focusNode = FocusNode();
+  bool _showEmoji = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.game.addListener(_onUpdate);
+    _focusNode.addListener(() {
+      if (_focusNode.hasFocus && _showEmoji) {
+        setState(() => _showEmoji = false);
+      }
+    });
+  }
+
+  void _onUpdate() {
+    if (mounted) {
+      setState(() {});
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.game.removeListener(_onUpdate);
+    _controller.dispose();
+    _scrollController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _send() {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    widget.game.sendChatMessage(text);
+    _controller.clear();
+  }
+
+  void _toggleEmoji() {
+    if (_showEmoji) {
+      _focusNode.requestFocus();
+    } else {
+      _focusNode.unfocus();
+    }
+    setState(() => _showEmoji = !_showEmoji);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isGameOver = widget.game.gameStatus != null && widget.game.gameStatus!.startsWith('Game Over');
+    final messages = widget.game.chatMessages;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: _showEmoji ? 0 : MediaQuery.of(context).viewInsets.bottom),
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * (_showEmoji ? 0.75 : 0.45),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Column(
+                children: [
+                  Container(width: 40, height: 4, decoration: BoxDecoration(color: AppColors.borderColor, borderRadius: BorderRadius.circular(2))),
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    const Icon(Icons.chat_bubble_rounded, color: AppColors.tealAccent, size: 20),
+                    const SizedBox(width: 8),
+                    const Flexible(child: Text('Game Chat', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary))),
+                  ]),
+                ],
+              ),
+            ),
+            const Divider(color: AppColors.borderColor, height: 1),
+            Expanded(
+              child: messages.isEmpty
+                  ? const Center(child: Text('No messages yet', style: TextStyle(color: AppColors.textMuted)))
+                  : ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      itemCount: messages.length,
+                      itemBuilder: (ctx, i) {
+                        final msg = messages[i];
+                        final isMe = msg.sender == widget.game.playerColor;
+                        return _buildBubble(msg, isMe);
+                      },
+                    ),
+            ),
+            if (!isGameOver)
+              Container(
+                padding: EdgeInsets.fromLTRB(8, 8, 8, _showEmoji ? 0 : 8 + MediaQuery.of(context).padding.bottom),
+                decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppColors.borderColor))),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _controller,
+                        focusNode: _focusNode,
+                        maxLength: 200,
+                        maxLines: 1,
+                        style: const TextStyle(color: AppColors.textPrimary),
+                        decoration: InputDecoration(
+                          hintText: 'Type a message...',
+                          hintStyle: const TextStyle(color: AppColors.textMuted),
+                          counterText: '',
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          filled: true,
+                          fillColor: AppColors.deepDark,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
+                        ),
+                        onSubmitted: (_) => _send(),
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _showEmoji ? Icons.keyboard_rounded : Icons.emoji_emotions_outlined,
+                        color: AppColors.textMuted,
+                      ),
+                      onPressed: _toggleEmoji,
+                    ),
+                    IconButton(icon: const Icon(Icons.send_rounded, color: AppColors.tealAccent), onPressed: _send),
+                  ],
+                ),
+              ),
+            if (_showEmoji && !isGameOver)
+              SizedBox(
+                height: 250,
+                child: EmojiPicker(
+                  onEmojiSelected: (category, emoji) {
+                    _controller.text += emoji.emoji;
+                    _controller.selection = TextSelection.fromPosition(TextPosition(offset: _controller.text.length));
+                  },
+                  config: Config(
+                    bottomActionBarConfig: const BottomActionBarConfig(enabled: false),
+                    categoryViewConfig: const CategoryViewConfig(
+                      iconColorSelected: AppColors.tealAccent,
+                      indicatorColor: AppColors.tealAccent,
+                    ),
+                    emojiViewConfig: EmojiViewConfig(
+                      backgroundColor: AppColors.surfaceDark,
+                      columns: 8,
+                      emojiSizeMax: 28,
+                    ),
+                    searchViewConfig: const SearchViewConfig(
+                      backgroundColor: AppColors.surfaceDark,
+                      buttonIconColor: AppColors.textMuted,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBubble(ChatMessage msg, bool isMe) {
+    final time = DateTime.fromMillisecondsSinceEpoch(msg.timestamp);
+    final timeStr = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+
+    return Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
+        decoration: BoxDecoration(
+          color: isMe ? AppColors.tealAccent.withValues(alpha: 0.15) : AppColors.surfaceLight,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: isMe ? AppColors.tealAccent.withValues(alpha: 0.3) : AppColors.borderColor),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (!isMe)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Text(msg.senderName, style: const TextStyle(fontSize: 11, color: AppColors.electricBlue, fontWeight: FontWeight.w600)),
+              ),
+            Text(msg.message, style: const TextStyle(fontSize: 14, color: AppColors.textPrimary)),
+            const SizedBox(height: 2),
+            Align(alignment: Alignment.bottomRight, child: Text(timeStr, style: const TextStyle(fontSize: 10, color: AppColors.textMuted))),
+          ],
+        ),
+      ),
     );
   }
 }

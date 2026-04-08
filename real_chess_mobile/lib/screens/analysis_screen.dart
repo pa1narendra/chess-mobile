@@ -171,34 +171,45 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   Widget _buildContent() {
-    return Column(
-      children: [
-        // Accuracy summary bar (if analyzed)
-        if (_hasAnalysis && _accuracy != null) _buildAccuracyBar(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Reserve space for non-board elements (~180px: accuracy + 2 player bars + nav + padding)
+        final maxBoardSize = constraints.maxHeight - 180;
+        final boardSize = maxBoardSize.clamp(200.0, constraints.maxWidth - 8);
 
-        // Opponent player bar
-        _buildCompactPlayerBar(_whiteName == _blackName ? _blackName : _whiteName == 'White' ? _blackName : _whiteName, false),
+        return Column(
+          children: [
+            // Accuracy summary bar (if analyzed)
+            if (_hasAnalysis && _accuracy != null) _buildAccuracyBar(),
 
-        // Eval bar + Board
-        _buildEvalBar(),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: CustomChessBoard(
-            controller: _boardController,
-            enableUserMoves: false,
-            boardOrientation: PlayerColor.white,
-          ),
-        ),
+            // Opponent player bar
+            _buildCompactPlayerBar(_blackName, false),
 
-        // Current player bar
-        _buildCompactPlayerBar(_whiteName, true),
+            // Eval bar + Board (constrained)
+            _buildEvalBar(),
+            Center(
+              child: SizedBox(
+                width: boardSize,
+                height: boardSize,
+                child: CustomChessBoard(
+                  controller: _boardController,
+                  enableUserMoves: false,
+                  boardOrientation: PlayerColor.white,
+                ),
+              ),
+            ),
 
-        // Navigation controls
-        _buildNavControls(),
+            // Current player bar
+            _buildCompactPlayerBar(_whiteName, true),
 
-        // Move list
-        Expanded(child: _buildMoveList()),
-      ],
+            // Navigation controls
+            _buildNavControls(),
+
+            // Move list
+            Expanded(child: _buildMoveList()),
+          ],
+        );
+      },
     );
   }
 
