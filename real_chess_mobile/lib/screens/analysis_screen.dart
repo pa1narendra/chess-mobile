@@ -32,6 +32,11 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   String _whiteName = 'White';
   String _blackName = 'Black';
 
+  // Opening explorer state
+  List<dynamic> _explorerMoves = [];
+  String? _explorerOpening;
+  bool _showExplorer = false;
+
   @override
   void initState() {
     super.initState();
@@ -124,6 +129,27 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     if (index < 0 || index >= _fens.length) return;
     setState(() => _currentMoveIndex = index);
     _boardController.loadFen(_fens[index]);
+    if (_showExplorer) _fetchExplorer();
+  }
+
+  Future<void> _fetchExplorer() async {
+    final fen = _fens[_currentMoveIndex];
+    try {
+      final result = await ApiService.getOpeningExplorer(fen);
+      if (mounted) {
+        setState(() {
+          _explorerMoves = result['moves'] ?? [];
+          _explorerOpening = result['opening']?['name'];
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _explorerMoves = [];
+          _explorerOpening = null;
+        });
+      }
+    }
   }
 
   // Get evaluation for the current move index
@@ -143,6 +169,44 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     return null;
   }
 
+  // Jump to next classified move (blunder/mistake/inaccuracy/brilliant)
+  void _jumpToNextKeyMoment() {
+    if (_evaluations.isEmpty) return;
+    for (final ev in _evaluations) {
+      final idx = ev['moveIndex'] as int?;
+      final cls = ev['classification'] as String?;
+      if (idx == null || cls == null) continue;
+      if (idx <= _currentMoveIndex) continue;
+      if (_isKeyMoment(cls)) {
+        _goToMove(idx);
+        return;
+      }
+    }
+  }
+
+  void _jumpToPrevKeyMoment() {
+    if (_evaluations.isEmpty) return;
+    for (int i = _evaluations.length - 1; i >= 0; i--) {
+      final ev = _evaluations[i];
+      final idx = ev['moveIndex'] as int?;
+      final cls = ev['classification'] as String?;
+      if (idx == null || cls == null) continue;
+      if (idx >= _currentMoveIndex) continue;
+      if (_isKeyMoment(cls)) {
+        _goToMove(idx);
+        return;
+      }
+    }
+  }
+
+  bool _isKeyMoment(String classification) {
+    return classification == 'blunder' ||
+           classification == 'mistake' ||
+           classification == 'inaccuracy' ||
+           classification == 'brilliant' ||
+           classification == 'great';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -152,6 +216,17 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         title: const Text('Analysis', style: TextStyle(color: AppColors.textPrimary, fontSize: 16)),
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
         actions: [
+          IconButton(
+            icon: Icon(
+              Icons.menu_book_rounded,
+              color: _showExplorer ? AppColors.tealAccent : AppColors.textSecondary,
+            ),
+            tooltip: 'Opening Explorer',
+            onPressed: () {
+              setState(() => _showExplorer = !_showExplorer);
+              if (_showExplorer) _fetchExplorer();
+            },
+          ),
           if (!_hasAnalysis && !_isLoading)
             TextButton.icon(
               onPressed: _isAnalyzing ? null : _runAnalysis,
@@ -205,11 +280,100 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             // Navigation controls
             _buildNavControls(),
 
-            // Move list
-            Expanded(child: _buildMoveList()),
+            // Move list OR Opening explorer (toggle)
+            Expanded(
+              child: _showExplorer ? _buildOpeningExplorer() : _buildMoveList(),
+            ),
           ],
         );
       },
+    );
+  }
+
+  Widget _buildOpeningExplorer() {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          color: AppColors.surfaceDark,
+          child: Row(
+            children: [
+              const Icon(Icons.menu_book_rounded, color: AppColors.tealAccent, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _explorerOpening ?? 'Master Games',
+                  style: const TextStyle(color: AppColors.textPrimary, fontSize: 13, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_explorerMoves.isEmpty)
+          const Expanded(
+            child: Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'No master games reached this position',
+                  style: TextStyle(color: AppColors.textMuted),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          )
+        else
+          Expanded(
+            child: ListView.builder(
+              itemCount: _explorerMoves.length,
+              itemBuilder: (ctx, i) {
+                final move = _explorerMoves[i] as Map<String, dynamic>;
+                final san = move['san'] ?? '';
+                final white = (move['white'] as num?)?.toInt() ?? 0;
+                final draws = (move['draws'] as num?)?.toInt() ?? 0;
+                final black = (move['black'] as num?)?.toInt() ?? 0;
+                final total = white + draws + black;
+                if (total == 0) return const SizedBox.shrink();
+
+                final whitePct = white / total;
+                final drawPct = draws / total;
+                final blackPct = black / total;
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 56,
+                        child: Text(san, style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600, fontSize: 14)),
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('$total games', style: const TextStyle(color: AppColors.textMuted, fontSize: 10)),
+                            const SizedBox(height: 2),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(2),
+                              child: Row(
+                                children: [
+                                  Expanded(flex: (whitePct * 100).round(), child: Container(height: 12, color: Colors.white)),
+                                  Expanded(flex: (drawPct * 100).round(), child: Container(height: 12, color: Colors.grey)),
+                                  Expanded(flex: (blackPct * 100).round(), child: Container(height: 12, color: Colors.grey[900])),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
     );
   }
 
@@ -318,37 +482,57 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   Widget _buildNavControls() {
+    final canPrev = _currentMoveIndex > 0;
+    final canNext = _currentMoveIndex < _fens.length - 1;
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 4),
       color: AppColors.surfaceDark,
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
+          if (_hasAnalysis)
+            IconButton(
+              onPressed: canPrev ? _jumpToPrevKeyMoment : null,
+              icon: Icon(Icons.fast_rewind_rounded, color: canPrev ? AppColors.amberWarning : AppColors.textMuted, size: 22),
+              tooltip: 'Previous key moment',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            )
+          else
+            IconButton(
+              onPressed: canPrev ? () => _goToMove(0) : null,
+              icon: Icon(Icons.skip_previous, color: canPrev ? AppColors.textPrimary : AppColors.textMuted, size: 22),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            ),
           IconButton(
-            onPressed: _currentMoveIndex > 0 ? () => _goToMove(0) : null,
-            icon: Icon(Icons.skip_previous, color: _currentMoveIndex > 0 ? AppColors.textPrimary : AppColors.textMuted, size: 22),
+            onPressed: canPrev ? () => _goToMove(_currentMoveIndex - 1) : null,
+            icon: Icon(Icons.chevron_left, color: canPrev ? AppColors.textPrimary : AppColors.textMuted, size: 28),
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
-          ),
-          IconButton(
-            onPressed: _currentMoveIndex > 0 ? () => _goToMove(_currentMoveIndex - 1) : null,
-            icon: Icon(Icons.chevron_left, color: _currentMoveIndex > 0 ? AppColors.textPrimary : AppColors.textMuted, size: 28),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
           ),
           Text('${_currentMoveIndex}/${_fens.length - 1}', style: const TextStyle(color: AppColors.textMuted, fontSize: 13)),
           IconButton(
-            onPressed: _currentMoveIndex < _fens.length - 1 ? () => _goToMove(_currentMoveIndex + 1) : null,
-            icon: Icon(Icons.chevron_right, color: _currentMoveIndex < _fens.length - 1 ? AppColors.textPrimary : AppColors.textMuted, size: 28),
+            onPressed: canNext ? () => _goToMove(_currentMoveIndex + 1) : null,
+            icon: Icon(Icons.chevron_right, color: canNext ? AppColors.textPrimary : AppColors.textMuted, size: 28),
             padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
           ),
-          IconButton(
-            onPressed: _currentMoveIndex < _fens.length - 1 ? () => _goToMove(_fens.length - 1) : null,
-            icon: Icon(Icons.skip_next, color: _currentMoveIndex < _fens.length - 1 ? AppColors.textPrimary : AppColors.textMuted, size: 22),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
-          ),
+          if (_hasAnalysis)
+            IconButton(
+              onPressed: canNext ? _jumpToNextKeyMoment : null,
+              icon: Icon(Icons.fast_forward_rounded, color: canNext ? AppColors.amberWarning : AppColors.textMuted, size: 22),
+              tooltip: 'Next key moment',
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            )
+          else
+            IconButton(
+              onPressed: canNext ? () => _goToMove(_fens.length - 1) : null,
+              icon: Icon(Icons.skip_next, color: canNext ? AppColors.textPrimary : AppColors.textMuted, size: 22),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            ),
         ],
       ),
     );

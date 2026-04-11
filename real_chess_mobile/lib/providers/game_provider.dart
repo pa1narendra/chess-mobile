@@ -90,6 +90,16 @@ class GameProvider with ChangeNotifier {
   List<ChatMessage> _chatMessages = [];
   int _unreadChatCount = 0;
   bool _isChatOpen = false;
+
+  // Rematch state
+  bool _rematchRequested = false; // Did I request a rematch?
+  bool _rematchIncoming = false;  // Did opponent request a rematch?
+  String? _rematchDeclinedMessage;
+
+  // Challenge state
+  Map<String, dynamic>? _incomingChallenge; // { challengeId, challengerName, timeControl, expiresAt }
+  String? _outgoingChallengeId;
+  String? _challengeStatusMessage;
   
   bool get isAnalyzing => _isAnalyzing;
   Map<String, dynamic>? get analysisResults => _analysisResults;
@@ -97,6 +107,12 @@ class GameProvider with ChangeNotifier {
   List<ChatMessage> get chatMessages => _chatMessages;
   int get unreadChatCount => _unreadChatCount;
   bool get isChatOpen => _isChatOpen;
+  bool get rematchRequested => _rematchRequested;
+  bool get rematchIncoming => _rematchIncoming;
+  String? get rematchDeclinedMessage => _rematchDeclinedMessage;
+  Map<String, dynamic>? get incomingChallenge => _incomingChallenge;
+  String? get outgoingChallengeId => _outgoingChallengeId;
+  String? get challengeStatusMessage => _challengeStatusMessage;
 
   // Tap-to-move state
   String? _selectedSquare;
@@ -621,7 +637,179 @@ class GameProvider with ChangeNotifier {
         if (!_isChatOpen) _unreadChatCount++;
         notifyListeners();
         break;
+
+      case 'CHALLENGE_RECEIVED':
+        _incomingChallenge = Map<String, dynamic>.from(msg);
+        notifyListeners();
+        break;
+
+      case 'CHALLENGE_SENT':
+        _outgoingChallengeId = msg['challengeId'];
+        _challengeStatusMessage = 'Challenge sent! Waiting for response...';
+        notifyListeners();
+        break;
+
+      case 'CHALLENGE_ACCEPTED':
+        // Challenge accepted by opponent OR I just accepted — start the game
+        _outgoingChallengeId = null;
+        _incomingChallenge = null;
+        _challengeStatusMessage = null;
+        _gameId = msg['gameId'];
+        _playerColor = msg['color'];
+        _currentTurn = 'w';
+        _whitePlayerName = msg['whitePlayerName'];
+        _blackPlayerName = msg['blackPlayerName'];
+        _chatMessages = [];
+        _unreadChatCount = 0;
+        _ratingChanges = null;
+        _gameStatus = null;
+        _isInGame = true;
+        _opponentDisconnected = false;
+
+        final fen = msg['fen'];
+        if (fen != null && fen is String) {
+          controller.loadFen(fen);
+        }
+        final timeData = msg['timeRemaining'];
+        if (timeData != null && timeData is Map) {
+          _timeRemaining = {
+            'w': (timeData['w'] as num?)?.toInt() ?? 600000,
+            'b': (timeData['b'] as num?)?.toInt() ?? 600000,
+          };
+        }
+        _lastMoveTime = DateTime.now().millisecondsSinceEpoch;
+        _startLocalTimer();
+        _saveActiveGame();
+        notifyListeners();
+        break;
+
+      case 'CHALLENGE_DECLINED':
+        if (msg['challengeId'] == _outgoingChallengeId) {
+          _outgoingChallengeId = null;
+          _challengeStatusMessage = 'Challenge declined';
+        }
+        notifyListeners();
+        break;
+
+      case 'CHALLENGE_EXPIRED':
+        if (msg['challengeId'] == _outgoingChallengeId) {
+          _outgoingChallengeId = null;
+          _challengeStatusMessage = 'Challenge expired';
+        }
+        if (_incomingChallenge != null && msg['challengeId'] == _incomingChallenge!['challengeId']) {
+          _incomingChallenge = null;
+        }
+        notifyListeners();
+        break;
+
+      case 'REMATCH_SENT':
+        _rematchRequested = true;
+        notifyListeners();
+        break;
+
+      case 'REMATCH_REQUESTED':
+        _rematchIncoming = true;
+        notifyListeners();
+        break;
+
+      case 'REMATCH_DECLINED':
+        _rematchRequested = false;
+        _rematchIncoming = false;
+        _rematchDeclinedMessage = 'Opponent declined the rematch';
+        notifyListeners();
+        break;
+
+      case 'REMATCH_STARTED':
+        // Server created a new game with swapped colors — reset state and join the new game
+        _gameId = msg['gameId'];
+        _playerColor = msg['color'];
+        _currentTurn = 'w';
+        _whitePlayerName = msg['whitePlayerName'];
+        _blackPlayerName = msg['blackPlayerName'];
+        _chatMessages = [];
+        _unreadChatCount = 0;
+        _ratingChanges = null;
+        _rematchRequested = false;
+        _rematchIncoming = false;
+        _rematchDeclinedMessage = null;
+        _gameStatus = null;
+        _isInGame = true;
+        _opponentDisconnected = false;
+        _disconnectionMessage = null;
+
+        final fen = msg['fen'];
+        if (fen != null && fen is String) {
+          controller.loadFen(fen);
+        }
+        final timeData = msg['timeRemaining'];
+        if (timeData != null && timeData is Map) {
+          _timeRemaining = {
+            'w': (timeData['w'] as num?)?.toInt() ?? 600000,
+            'b': (timeData['b'] as num?)?.toInt() ?? 600000,
+          };
+        }
+        _lastMoveTime = DateTime.now().millisecondsSinceEpoch;
+        _startLocalTimer();
+        _saveActiveGame();
+        notifyListeners();
+        break;
     }
+  }
+
+  void requestRematch() {
+    if (_socket == null || _gameId == null || _isOfflineGame) return;
+    _socket!.send({'type': 'REMATCH_REQUEST', 'gameId': _gameId, 'token': _token});
+  }
+
+  void acceptRematch() {
+    if (_socket == null || _gameId == null) return;
+    _socket!.send({'type': 'REMATCH_ACCEPT', 'gameId': _gameId, 'token': _token});
+    _rematchIncoming = false;
+    notifyListeners();
+  }
+
+  void declineRematch() {
+    if (_socket == null || _gameId == null) return;
+    _socket!.send({'type': 'REMATCH_DECLINE', 'gameId': _gameId, 'token': _token});
+    _rematchIncoming = false;
+    notifyListeners();
+  }
+
+  void clearRematchDeclinedMessage() {
+    _rematchDeclinedMessage = null;
+    notifyListeners();
+  }
+
+  void sendChallenge(String targetUserId, int timeControl) {
+    if (_socket == null) return;
+    _socket!.send({
+      'type': 'CHALLENGE_REQUEST',
+      'targetUserId': targetUserId,
+      'timeControl': timeControl,
+      'token': _token,
+    });
+  }
+
+  void acceptChallenge(String challengeId) {
+    if (_socket == null) return;
+    _socket!.send({'type': 'CHALLENGE_ACCEPT', 'challengeId': challengeId, 'token': _token});
+  }
+
+  void declineChallenge(String challengeId) {
+    if (_socket == null) return;
+    _socket!.send({'type': 'CHALLENGE_DECLINE', 'challengeId': challengeId, 'token': _token});
+    _incomingChallenge = null;
+    notifyListeners();
+  }
+
+  void clearChallengeStatus() {
+    _challengeStatusMessage = null;
+    notifyListeners();
+  }
+
+  void clearIncomingChallenge() {
+    _incomingChallenge = null;
+    notifyListeners();
   }
 
   void createGame(String timeControl, {bool isBot = false, int botDifficulty = 3}) {
@@ -914,6 +1102,9 @@ class GameProvider with ChangeNotifier {
     _chatMessages = [];
     _unreadChatCount = 0;
     _isChatOpen = false;
+    _rematchRequested = false;
+    _rematchIncoming = false;
+    _rematchDeclinedMessage = null;
     _stopLocalTimer();
     controller.resetBoard();
     // Clear saved game when explicitly leaving

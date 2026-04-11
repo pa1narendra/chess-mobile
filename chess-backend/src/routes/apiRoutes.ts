@@ -1,6 +1,9 @@
 import { Elysia, t } from 'elysia';
+import mongoose from 'mongoose';
 import { Game } from '../schemas/game';
 import { User } from '../schemas/user';
+import { Friendship } from '../schemas/friendship';
+import { PuzzleProgress } from '../schemas/puzzleProgress';
 import { verifyAuthHeader } from '../middleware/authMiddleware';
 
 export const apiRoutes = new Elysia({ prefix: '/api' })
@@ -319,4 +322,332 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
         }
 
         return { success: true, migrated };
+    })
+
+    // --- FRIENDS ENDPOINTS ---
+
+    // GET /api/users/search?q=username - Search users by username
+    .get('/users/search', async ({ headers, query, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        const q = (query.q || '').trim();
+        if (q.length < 2) return { success: true, data: [] };
+
+        const users = await User.find({
+            username: { $regex: q, $options: 'i' },
+            _id: { $ne: user.id }
+        })
+            .limit(20)
+            .select('username rating profile.displayName profile.country')
+            .lean();
+
+        return {
+            success: true,
+            data: users.map((u: any) => ({
+                _id: u._id,
+                username: u.username,
+                displayName: u.profile?.displayName,
+                rating: u.rating,
+                country: u.profile?.country,
+            }))
+        };
+    }, {
+        query: t.Object({ q: t.Optional(t.String()) })
+    })
+
+    // GET /api/friends - List authenticated user's friends and pending requests
+    .get('/friends', async ({ headers, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        const userId = new mongoose.Types.ObjectId(user.id);
+
+        // Accepted friendships — could be either requester or recipient
+        const accepted = await Friendship.find({
+            $or: [{ requester: userId }, { recipient: userId }],
+            status: 'accepted'
+        }).lean();
+
+        // Pending requests where I am the recipient
+        const incoming = await Friendship.find({
+            recipient: userId,
+            status: 'pending'
+        }).lean();
+
+        // Pending requests I sent
+        const outgoing = await Friendship.find({
+            requester: userId,
+            status: 'pending'
+        }).lean();
+
+        // Helper: fetch users for a list of IDs
+        const fetchUsers = async (ids: any[]) => {
+            if (ids.length === 0) return [];
+            const users = await User.find({ _id: { $in: ids } })
+                .select('username rating profile.displayName profile.country isOnline lastActive')
+                .lean();
+            return users.map((u: any) => ({
+                _id: u._id,
+                username: u.username,
+                displayName: u.profile?.displayName,
+                rating: u.rating,
+                country: u.profile?.country,
+                isOnline: u.isOnline,
+                lastActive: u.lastActive,
+            }));
+        };
+
+        const friendIds = accepted.map((f: any) =>
+            f.requester.toString() === user.id ? f.recipient : f.requester
+        );
+        const incomingIds = incoming.map((f: any) => f.requester);
+        const outgoingIds = outgoing.map((f: any) => f.recipient);
+
+        const [friends, incomingUsers, outgoingUsers] = await Promise.all([
+            fetchUsers(friendIds),
+            fetchUsers(incomingIds),
+            fetchUsers(outgoingIds),
+        ]);
+
+        // Attach friendship ID for incoming requests (needed for accept/decline)
+        const incomingWithId = incomingUsers.map((u: any) => {
+            const f = incoming.find((fr: any) => fr.requester.toString() === u._id.toString());
+            return { ...u, friendshipId: f?._id };
+        });
+
+        return {
+            success: true,
+            data: { friends, incoming: incomingWithId, outgoing: outgoingUsers }
+        };
+    })
+
+    // POST /api/friends/request - Send friend request
+    .post('/friends/request', async ({ headers, body, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        const targetId = body.userId;
+        if (!mongoose.Types.ObjectId.isValid(targetId)) {
+            set.status = 400;
+            return { error: 'Invalid user ID' };
+        }
+        if (targetId === user.id) {
+            set.status = 400;
+            return { error: "Can't friend yourself" };
+        }
+
+        // Check if target user exists
+        const target = await User.findById(targetId).select('_id');
+        if (!target) {
+            set.status = 404;
+            return { error: 'User not found' };
+        }
+
+        const requester = new mongoose.Types.ObjectId(user.id);
+        const recipient = new mongoose.Types.ObjectId(targetId);
+
+        // Check if friendship already exists in either direction
+        const existing = await Friendship.findOne({
+            $or: [
+                { requester, recipient },
+                { requester: recipient, recipient: requester }
+            ]
+        });
+        if (existing) {
+            if (existing.status === 'accepted') {
+                return { success: false, error: 'Already friends' };
+            }
+            return { success: false, error: 'Friend request already exists' };
+        }
+
+        const friendship = new Friendship({ requester, recipient, status: 'pending' });
+        await friendship.save();
+
+        return { success: true, data: { friendshipId: friendship._id } };
+    }, {
+        body: t.Object({ userId: t.String() })
+    })
+
+    // PUT /api/friends/:id/accept - Accept friend request
+    .put('/friends/:id/accept', async ({ headers, params, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(params.id)) {
+            set.status = 400;
+            return { error: 'Invalid friendship ID' };
+        }
+
+        const friendship = await Friendship.findById(params.id);
+        if (!friendship) {
+            set.status = 404;
+            return { error: 'Friend request not found' };
+        }
+
+        // Only recipient can accept
+        if (friendship.recipient.toString() !== user.id) {
+            set.status = 403;
+            return { error: 'Not authorized' };
+        }
+        if (friendship.status === 'accepted') {
+            return { success: true };
+        }
+
+        friendship.status = 'accepted';
+        friendship.acceptedAt = new Date();
+        await friendship.save();
+
+        return { success: true };
+    })
+
+    // DELETE /api/friends/:id - Remove friend or decline/cancel request
+    .delete('/friends/:id', async ({ headers, params, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(params.id)) {
+            set.status = 400;
+            return { error: 'Invalid friendship ID' };
+        }
+
+        const friendship = await Friendship.findById(params.id);
+        if (!friendship) {
+            set.status = 404;
+            return { error: 'Friendship not found' };
+        }
+
+        // Either side can remove
+        if (friendship.requester.toString() !== user.id && friendship.recipient.toString() !== user.id) {
+            set.status = 403;
+            return { error: 'Not authorized' };
+        }
+
+        await Friendship.findByIdAndDelete(params.id);
+        return { success: true };
+    })
+
+    // --- PUZZLES ---
+    // We proxy Lichess's public puzzle API so we don't need our own puzzle database.
+    // Lichess has ~4M community-contributed puzzles. CC0 licensed.
+
+    // GET /api/puzzles/daily - Today's puzzle (same for everyone)
+    .get('/puzzles/daily', async ({ set }) => {
+        try {
+            const response = await fetch('https://lichess.org/api/puzzle/daily');
+            if (!response.ok) {
+                set.status = 502;
+                return { error: 'Puzzle service unavailable' };
+            }
+            const data = await response.json();
+            return { success: true, data };
+        } catch (e: any) {
+            set.status = 500;
+            return { error: e.message || 'Failed to fetch daily puzzle' };
+        }
+    })
+
+    // GET /api/puzzles/random - Random puzzle, optionally near user's puzzle rating
+    .get('/puzzles/random', async ({ headers, query, set }) => {
+        try {
+            // Lichess random puzzle endpoint (public, no auth needed)
+            // Supported parameters: angle (theme), difficulty (easy/normal/hard)
+            const difficulty = query.difficulty || 'normal';
+            const url = `https://lichess.org/api/puzzle/next?difficulty=${difficulty}`;
+
+            const response = await fetch(url);
+            if (!response.ok) {
+                set.status = 502;
+                return { error: 'Puzzle service unavailable' };
+            }
+            const data = await response.json();
+            return { success: true, data };
+        } catch (e: any) {
+            set.status = 500;
+            return { error: e.message || 'Failed to fetch puzzle' };
+        }
+    }, {
+        query: t.Object({
+            difficulty: t.Optional(t.String())
+        })
+    })
+
+    // GET /api/puzzles/progress - Get authenticated user's puzzle stats
+    .get('/puzzles/progress', async ({ headers, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        let progress = await PuzzleProgress.findOne({ userId: user.id }).lean();
+        if (!progress) {
+            // Create default progress on first access
+            const created = await PuzzleProgress.create({ userId: user.id });
+            progress = created.toObject();
+        }
+
+        return { success: true, data: progress };
+    })
+
+    // POST /api/puzzles/solved - Record puzzle result
+    .post('/puzzles/solved', async ({ headers, body, set }) => {
+        const user = verifyAuthHeader(headers['authorization']);
+        if (!user) {
+            set.status = 401;
+            return { error: 'Authentication required' };
+        }
+
+        const { success: solved, puzzleRating } = body;
+        const userId = new mongoose.Types.ObjectId(user.id);
+
+        let progress = await PuzzleProgress.findOne({ userId });
+        if (!progress) {
+            progress = new PuzzleProgress({ userId });
+        }
+
+        // Simple Glicko-like rating adjustment
+        // expected score based on rating difference
+        const kFactor = 32;
+        const currentRating = progress.puzzleRating || 1200;
+        const expectedScore = 1 / (1 + Math.pow(10, ((puzzleRating || 1500) - currentRating) / 400));
+        const actualScore = solved ? 1 : 0;
+        const ratingChange = Math.round(kFactor * (actualScore - expectedScore));
+
+        progress.puzzleRating = currentRating + ratingChange;
+
+        if (solved) {
+            progress.solved = (progress.solved || 0) + 1;
+            progress.streak = (progress.streak || 0) + 1;
+            if (progress.streak > (progress.bestStreak || 0)) {
+                progress.bestStreak = progress.streak;
+            }
+            progress.lastSolvedAt = new Date();
+        } else {
+            progress.failed = (progress.failed || 0) + 1;
+            progress.streak = 0;
+        }
+
+        await progress.save();
+        return { success: true, data: { newRating: progress.puzzleRating, ratingChange } };
+    }, {
+        body: t.Object({
+            success: t.Boolean(),
+            puzzleRating: t.Optional(t.Number())
+        })
     });

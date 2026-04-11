@@ -13,6 +13,7 @@ interface QueueEntry {
     wsId: string;
     timeControl: number;
     queuedAt: number;
+    rating: number;
 }
 
 interface QueueResult {
@@ -38,6 +39,7 @@ export class GameManager {
     private timeoutHandlers: Map<string, ReturnType<typeof setTimeout>> = new Map();
     private matchmakingQueue: Map<string, QueueEntry> = new Map();
     private disconnectedPlayers: Map<string, DisconnectedPlayer> = new Map(); // playerId -> disconnection info
+    private recentOpponents: Map<string, string[]> = new Map(); // playerId -> last 3 opponent playerIds
     private matchmakingTimeout = 30000; // 30 seconds
     private disconnectionTimeout = 60000; // 60 seconds to reconnect
     private onMove?: (gameId: string, result: any) => void;
@@ -60,8 +62,24 @@ export class GameManager {
     }
 
     // Matchmaking queue methods
-    queueForMatch(playerId: string, userId: string | undefined, wsId: string, timeControl: number): QueueResult {
-        // Check if already in queue
+    // Rating window expands over time: ±100 → ±200 → ±400 → ±800 → any
+    private getRatingWindow(waitMs: number): number {
+        if (waitMs < 5000) return 100;
+        if (waitMs < 10000) return 200;
+        if (waitMs < 20000) return 400;
+        if (waitMs < 30000) return 800;
+        return Infinity;
+    }
+
+    // Track recent opponents (last 3) to reduce same-match farming
+    private addRecentOpponent(playerId: string, opponentId: string) {
+        const list = this.recentOpponents.get(playerId) || [];
+        list.push(opponentId);
+        if (list.length > 3) list.shift();
+        this.recentOpponents.set(playerId, list);
+    }
+
+    queueForMatch(playerId: string, userId: string | undefined, wsId: string, timeControl: number, rating: number = 1200): QueueResult {
         if (this.matchmakingQueue.has(playerId)) {
             return { status: 'QUEUED' };
         }
@@ -69,37 +87,69 @@ export class GameManager {
         // Check if already in an active game
         for (const game of this.games.values()) {
             if ((game.players.w === playerId || game.players.b === playerId) && game.status === 'active') {
-                // Already in a game
                 return { status: 'QUEUED' };
             }
         }
 
-        // Try to find a match atomically
+        const now = Date.now();
+        const recentOpponents = this.recentOpponents.get(playerId) || [];
+
+        // Collect all candidates with the same time control
+        const candidates: Array<{ id: string; entry: QueueEntry; ratingDiff: number; isRecent: boolean }> = [];
         for (const [queuedPlayerId, queued] of this.matchmakingQueue.entries()) {
-            // Match conditions: same time control, not same player
-            if (queued.timeControl === timeControl && queuedPlayerId !== playerId) {
-                // Found a match! Remove from queue and create game
-                this.matchmakingQueue.delete(queuedPlayerId);
+            if (queued.timeControl !== timeControl || queuedPlayerId === playerId) continue;
+            candidates.push({
+                id: queuedPlayerId,
+                entry: queued,
+                ratingDiff: Math.abs(rating - queued.rating),
+                isRecent: recentOpponents.includes(queuedPlayerId),
+            });
+        }
 
-                // Create game with both players
-                const gameId = this.createMatchedGame(
-                    queuedPlayerId, queued.userId,
-                    playerId, userId,
-                    timeControl
-                );
+        // Find best match: closest rating within expanding window, preferring non-recent opponents
+        let bestMatch: { id: string; entry: QueueEntry; ratingDiff: number; isRecent: boolean } | null = null;
 
-                const game = this.games.get(gameId);
+        for (const cand of candidates) {
+            const queuedWaitMs = now - cand.entry.queuedAt;
+            const window = this.getRatingWindow(queuedWaitMs);
+            if (cand.ratingDiff > window) continue;
 
-                return {
-                    status: 'MATCHED',
-                    gameId,
-                    color: 'b', // Joining player is black
-                    opponentWsId: queued.wsId,
-                    opponentColor: 'w',
-                    fen: game?.fen,
-                    timeRemaining: game?.timeRemaining
-                };
+            if (bestMatch === null ||
+                (bestMatch.isRecent && !cand.isRecent) ||
+                (bestMatch.isRecent === cand.isRecent && cand.ratingDiff < bestMatch.ratingDiff)) {
+                bestMatch = cand;
             }
+        }
+
+        // Fallback: if no match found but there's only ONE other player waiting with the same
+        // time control, just match them — a bad rating match is better than waiting forever
+        if (!bestMatch && candidates.length === 1) {
+            bestMatch = candidates[0];
+        }
+
+        if (bestMatch) {
+            this.matchmakingQueue.delete(bestMatch.id);
+
+            // Track recent opponents for both players
+            this.addRecentOpponent(playerId, bestMatch.id);
+            this.addRecentOpponent(bestMatch.id, playerId);
+
+            const gameId = this.createMatchedGame(
+                bestMatch.id, bestMatch.entry.userId,
+                playerId, userId,
+                timeControl
+            );
+
+            const game = this.games.get(gameId);
+            return {
+                status: 'MATCHED',
+                gameId,
+                color: 'b',
+                opponentWsId: bestMatch.entry.wsId,
+                opponentColor: 'w',
+                fen: game?.fen,
+                timeRemaining: game?.timeRemaining
+            };
         }
 
         // No match found, add to queue
@@ -108,10 +158,20 @@ export class GameManager {
             userId,
             wsId,
             timeControl,
-            queuedAt: Date.now(),
+            queuedAt: now,
+            rating,
         });
 
         return { status: 'QUEUED' };
+    }
+
+    // Public wrapper for rematch use — creates a game between two known players
+    createMatchedGameForRematch(
+        whitePlayerId: string, whiteUserId: string | undefined,
+        blackPlayerId: string, blackUserId: string | undefined,
+        durationMinutes: number
+    ): string {
+        return this.createMatchedGame(whitePlayerId, whiteUserId, blackPlayerId, blackUserId, durationMinutes);
     }
 
     private createMatchedGame(
@@ -471,7 +531,7 @@ export class GameManager {
 
         if (!game.players.w) {
             game.players.w = playerId;
-            // Update DB - game is now starting
+            game.status = 'active'; // Update in-memory status
             const updateData: any = {
                 'players.w': playerId,
                 status: 'active',
@@ -480,12 +540,11 @@ export class GameManager {
             };
             if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
                 updateData['userIds.w'] = userId;
-                game.userIds.w = userId; // Also update in-memory
+                game.userIds.w = userId;
             }
             Game.findOneAndUpdate({ gameId }, updateData).exec()
                 .catch(err => console.error(`[DB] Failed to update game ${gameId} on join:`, err.message));
 
-            // Start timer (White moves first)
             game.lastMoveTime = Date.now();
             this.resetMoveTimer(gameId);
 
@@ -493,7 +552,7 @@ export class GameManager {
         }
         if (!game.players.b) {
             game.players.b = playerId;
-            // Update DB - game is now starting
+            game.status = 'active'; // Update in-memory status
             const updateData: any = {
                 'players.b': playerId,
                 status: 'active',
@@ -502,12 +561,11 @@ export class GameManager {
             };
             if (userId && /^[0-9a-fA-F]{24}$/.test(userId)) {
                 updateData['userIds.b'] = userId;
-                game.userIds.b = userId; // Also update in-memory
+                game.userIds.b = userId;
             }
             Game.findOneAndUpdate({ gameId }, updateData).exec()
                 .catch(err => console.error(`[DB] Failed to update game ${gameId} on join:`, err.message));
 
-            // Start timer (White moves first)
             game.lastMoveTime = Date.now();
             this.resetMoveTimer(gameId);
 
@@ -841,10 +899,15 @@ export class GameManager {
         const playerColor = game.players.w === playerId ? 'w' : (game.players.b === playerId ? 'b' : null);
         if (!playerColor) return;
 
-        const winner = playerColor === 'w' ? 'b' : 'w';
-        const reason = 'resignation';
+        // If very early in the game (< 2 full moves), abort instead of resign
+        // Aborted games don't count for rating changes
+        if (game.history.length < 2) {
+            this.handleGameOver(gameId, null, 'aborted');
+            return;
+        }
 
-        this.handleGameOver(gameId, winner, reason);
+        const winner = playerColor === 'w' ? 'b' : 'w';
+        this.handleGameOver(gameId, winner, 'resignation');
     }
 
     offerDraw(gameId: string, playerId: string) {
@@ -916,7 +979,10 @@ export class GameManager {
         }
 
         // Update User Stats with Glicko-2 and get rating changes
-        const ratingChanges = await this.updateUserStats(game.userIds.w, game.userIds.b, winner);
+        // Skip rating updates for aborted games
+        const ratingChanges = reason === 'aborted'
+            ? null
+            : await this.updateUserStats(game.userIds.w, game.userIds.b, winner);
 
         // Mark as finished instead of deleting
         game.status = 'finished';

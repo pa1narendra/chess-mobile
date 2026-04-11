@@ -44,7 +44,13 @@ export type WebSocketMessage =
     | { type: 'SYNC_TIME'; gameId: string; token?: string }
     | { type: 'REJOIN_GAME'; token?: string }
     | { type: 'SUBSCRIBE_GAME'; gameId: string }
-    | { type: 'CHAT_MESSAGE'; gameId: string; message: string; token?: string };
+    | { type: 'CHAT_MESSAGE'; gameId: string; message: string; token?: string }
+    | { type: 'REMATCH_REQUEST'; gameId: string; token?: string }
+    | { type: 'REMATCH_ACCEPT'; gameId: string; token?: string }
+    | { type: 'REMATCH_DECLINE'; gameId: string; token?: string }
+    | { type: 'CHALLENGE_REQUEST'; targetUserId: string; timeControl: number; token?: string }
+    | { type: 'CHALLENGE_ACCEPT'; challengeId: string; token?: string }
+    | { type: 'CHALLENGE_DECLINE'; challengeId: string; token?: string };
 
 export type WebSocketResponse =
     | { type: 'GAME_CREATED'; gameId: string; color: PlayerColor; fen: string; timeRemaining: { w: number; b: number }; history: string[] }

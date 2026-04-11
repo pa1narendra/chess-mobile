@@ -124,6 +124,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   @override
+  bool _hasShownRematchPrompt = false;
+
   Widget build(BuildContext context) {
     return Consumer<GameProvider>(
       builder: (context, game, child) {
@@ -136,6 +138,27 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
           });
         } else if (!isGameOver) {
           _hasShownGameOverOverlay = false;
+          _hasShownRematchPrompt = false;
+        }
+
+        // Show rematch prompt to opponent
+        if (game.rematchIncoming && !_hasShownRematchPrompt) {
+          _hasShownRematchPrompt = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _showRematchPrompt(context, game);
+          });
+        }
+
+        // Show decline snackbar
+        if (game.rematchDeclinedMessage != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(game.rematchDeclinedMessage!), backgroundColor: AppColors.roseError),
+              );
+              game.clearRematchDeclinedMessage();
+            }
+          });
         }
 
         return Scaffold(
@@ -233,7 +256,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                       children: [
                         Icon(Icons.flag_rounded, color: AppColors.roseError),
                         const SizedBox(width: 12),
-                        Text(game.isOfflineGame ? 'Give Up' : 'Resign'),
+                        Text(game.isOfflineGame ? 'Give Up' : (game.moveHistory.length < 2 ? 'Abort' : 'Resign')),
                       ],
                     ),
                   ),
@@ -380,6 +403,43 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     );
   }
 
+  void _showRematchPrompt(BuildContext context, GameProvider game) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceDark,
+        title: const Row(
+          children: [
+            Icon(Icons.replay_rounded, color: AppColors.amberWarning),
+            SizedBox(width: 8),
+            Flexible(child: Text('Rematch?', style: TextStyle(color: AppColors.textPrimary))),
+          ],
+        ),
+        content: const Text('Your opponent wants a rematch with swapped colors.', style: TextStyle(color: AppColors.textSecondary)),
+        actions: [
+          TextButton(
+            onPressed: () {
+              game.declineRematch();
+              Navigator.pop(ctx);
+            },
+            child: const Text('Decline', style: TextStyle(color: AppColors.roseError)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              game.acceptRematch();
+              Navigator.pop(ctx);
+              // Dismiss the game-over overlay if open
+              if (Navigator.canPop(context)) Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.tealAccent),
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _openChatSheet(BuildContext context, GameProvider game) {
     game.setChatOpen(true);
     showModalBottomSheet(
@@ -481,6 +541,21 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             // Action buttons
             Row(
               children: [
+                // Rematch (only for online games)
+                if (!game.isOfflineGame && game.gameId != null)
+                  Expanded(
+                    child: _overlayButton(
+                      Icons.replay_rounded,
+                      game.rematchRequested ? 'Waiting...' : 'Rematch',
+                      AppColors.amberWarning,
+                      () {
+                        if (!game.rematchRequested) {
+                          game.requestRematch();
+                        }
+                      },
+                    ),
+                  ),
+                if (!game.isOfflineGame && game.gameId != null) const SizedBox(width: 8),
                 // Analyze (only for online games)
                 if (!game.isOfflineGame && game.gameId != null)
                   Expanded(
@@ -489,7 +564,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                       Navigator.push(context, MaterialPageRoute(builder: (_) => AnalysisScreen(gameId: game.gameId!)));
                     }),
                   ),
-                if (!game.isOfflineGame && game.gameId != null) const SizedBox(width: 12),
+                if (!game.isOfflineGame && game.gameId != null) const SizedBox(width: 8),
                 // Home
                 Expanded(
                   child: _overlayButton(Icons.home_rounded, 'Home', AppColors.tealAccent, () {
@@ -1050,17 +1125,26 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   }
 
   void _showResignConfirmation(BuildContext context) {
+    final game = Provider.of<GameProvider>(context, listen: false);
+    // If game is very early (< 2 moves), offer "Abort" instead — no rating loss
+    final isAbort = game.moveHistory.length < 2;
+    final title = isAbort ? 'Abort Game?' : 'Resign?';
+    final body = isAbort
+        ? 'No moves have been played. You can abort without rating loss.'
+        : 'Are you sure you want to resign this game? This cannot be undone.';
+    final buttonLabel = isAbort ? 'Abort' : 'Resign';
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Row(
           children: [
-            Icon(Icons.flag_rounded, color: AppColors.roseError),
+            Icon(isAbort ? Icons.close_rounded : Icons.flag_rounded, color: AppColors.roseError),
             const SizedBox(width: 8),
-            const Text('Resign?'),
+            Flexible(child: Text(title)),
           ],
         ),
-        content: const Text('Are you sure you want to resign this game? This cannot be undone.'),
+        content: Text(body),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -1072,7 +1156,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
               Provider.of<GameProvider>(context, listen: false).resign();
               Navigator.pop(ctx);
             },
-            child: const Text('Resign'),
+            child: Text(buttonLabel),
           ),
         ],
       ),

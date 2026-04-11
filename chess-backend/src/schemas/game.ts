@@ -59,7 +59,7 @@ const gameSchema = new mongoose.Schema({
             type: String,
             enum: ['checkmate', 'resignation', 'timeout', 'stalemate',
                    'insufficient', 'repetition', 'fifty-move', 'agreement',
-                   'mutual agreement', 'disconnection', 'abandoned',
+                   'mutual agreement', 'disconnection', 'abandoned', 'aborted',
                    'draw', 'threefold repetition', 'insufficient material']
         }
     },

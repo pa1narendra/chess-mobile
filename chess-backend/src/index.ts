@@ -57,6 +57,7 @@ function resolvePlayer(
         const decoded = verifyToken(token);
         if (decoded) {
             authenticatedUsers.set(wsId, decoded.id);
+            addUserWs(decoded.id, wsId);
             return { playerId: decoded.id, userId: decoded.id };
         }
     }
@@ -176,6 +177,34 @@ const gameManager = new GameManager(
 const users = new Map<string, string>();              // ws.id -> playerId
 const authenticatedUsers = new Map<string, string>(); // ws.id -> userId (MongoDB _id)
 const guestIds = new Map<string, string>();            // ws.id -> server-generated guest ID
+const pendingRematches = new Map<string, { requesterId: string; timestamp: number }>(); // gameId -> request
+
+// Challenge state: challengeId -> { challenger user/ws, target user/ws, time control, expiresAt }
+interface PendingChallenge {
+    challengeId: string;
+    challengerUserId: string;
+    challengerWsId: string;
+    challengerName: string;
+    targetUserId: string;
+    timeControl: number;
+    expiresAt: number;
+}
+const pendingChallenges = new Map<string, PendingChallenge>();
+
+// Reverse lookup: userId -> set of ws.ids (a user could be on multiple devices)
+const userWsMap = new Map<string, Set<string>>();
+
+function addUserWs(userId: string, wsId: string) {
+    if (!userWsMap.has(userId)) userWsMap.set(userId, new Set());
+    userWsMap.get(userId)!.add(wsId);
+}
+function removeUserWs(userId: string, wsId: string) {
+    userWsMap.get(userId)?.delete(wsId);
+    if (userWsMap.get(userId)?.size === 0) userWsMap.delete(userId);
+}
+function getUserWsIds(userId: string): string[] {
+    return Array.from(userWsMap.get(userId) || []);
+}
 
 app.ws('/ws', {
     body: t.Any(),
@@ -193,6 +222,8 @@ app.ws('/ws', {
             const decoded = verifyToken(token);
             if (decoded) {
                 authenticatedUsers.set(ws.id, decoded.id);
+                addUserWs(decoded.id, ws.id);
+                ws.subscribe(`user:${decoded.id}`);
                 authenticated = true;
                 console.log(`[WS] Authenticated connection: ${decoded.username} (${decoded.id})`);
             }
@@ -374,7 +405,15 @@ app.ws('/ws', {
             ws.subscribe(`user:${ws.id}`);
 
             const timeControl = typeof msg.timeControl === 'number' ? Math.min(Math.max(msg.timeControl, 1), 60) : 10;
-            const result = gameManager.queueForMatch(playerId, userId, ws.id, timeControl);
+
+            // Fetch player rating for rating-based matching
+            let rating = 1200;
+            if (userId) {
+                const user = await User.findById(userId).select('rating');
+                if (user && (user as any).rating) rating = (user as any).rating;
+            }
+
+            const result = gameManager.queueForMatch(playerId, userId, ws.id, timeControl, rating);
 
             if (result.status === 'QUEUED') {
                 ws.send({
@@ -467,6 +506,230 @@ app.ws('/ws', {
                 ws.send({ type: 'REJOIN_FAILED', message: 'No active game found' });
             }
 
+        } else if (msg.type === 'REMATCH_REQUEST') {
+            if (!isValidGameId(msg.gameId)) return;
+            const playerId = users.get(ws.id);
+            if (!playerId) return;
+
+            const game = gameManager.getGame(msg.gameId);
+            if (!game || game.status !== 'finished') {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Can only rematch finished games' }));
+                return;
+            }
+            if (game.players.w !== playerId && game.players.b !== playerId) return;
+
+            pendingRematches.set(msg.gameId, { requesterId: playerId, timestamp: Date.now() });
+
+            // Notify opponent
+            ws.publish(msg.gameId, JSON.stringify({
+                type: 'REMATCH_REQUESTED',
+                gameId: msg.gameId,
+                requesterColor: game.players.w === playerId ? 'w' : 'b',
+            }));
+            ws.send(JSON.stringify({ type: 'REMATCH_SENT', gameId: msg.gameId }));
+
+        } else if (msg.type === 'REMATCH_ACCEPT') {
+            if (!isValidGameId(msg.gameId)) return;
+            const playerId = users.get(ws.id);
+            if (!playerId) return;
+
+            const pending = pendingRematches.get(msg.gameId);
+            if (!pending) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'No pending rematch request' }));
+                return;
+            }
+            if (pending.requesterId === playerId) return; // can't accept your own request
+
+            const oldGame = gameManager.getGame(msg.gameId);
+            if (!oldGame) return;
+
+            // Swap colors for rematch
+            const oldWhiteId = oldGame.players.w;
+            const oldBlackId = oldGame.players.b;
+            const oldWhiteUserId = oldGame.userIds.w;
+            const oldBlackUserId = oldGame.userIds.b;
+            const timeControlMin = Math.round((oldGame.timeRemaining.w + oldGame.timeRemaining.b) / 2 / 60000) || 10;
+
+            pendingRematches.delete(msg.gameId);
+
+            // New game: old black becomes new white
+            const newGameId = gameManager.createMatchedGameForRematch(
+                oldBlackId || '', oldBlackUserId,
+                oldWhiteId || '', oldWhiteUserId,
+                timeControlMin
+            );
+
+            const newGame = gameManager.getGame(newGameId);
+            const { whiteName, blackName } = await fetchPlayerNames(newGame);
+
+            // Subscribe both players to new game room & notify them
+            ws.subscribe(newGameId);
+
+            // Find opponent's ws and subscribe them
+            for (const [wsId, pid] of users.entries()) {
+                if (pid === pending.requesterId) {
+                    app.server?.publish(`user:${wsId}`, JSON.stringify({
+                        type: 'REMATCH_STARTED',
+                        gameId: newGameId,
+                        color: oldWhiteId === pending.requesterId ? 'b' : 'w',
+                        fen: newGame?.fen,
+                        timeRemaining: newGame?.timeRemaining,
+                        history: [],
+                        whitePlayerName: whiteName,
+                        blackPlayerName: blackName,
+                    }));
+                }
+            }
+
+            ws.send(JSON.stringify({
+                type: 'REMATCH_STARTED',
+                gameId: newGameId,
+                color: oldWhiteId === playerId ? 'b' : 'w',
+                fen: newGame?.fen,
+                timeRemaining: newGame?.timeRemaining,
+                history: [],
+                whitePlayerName: whiteName,
+                blackPlayerName: blackName,
+            }));
+
+        } else if (msg.type === 'REMATCH_DECLINE') {
+            if (!isValidGameId(msg.gameId)) return;
+            const pending = pendingRematches.get(msg.gameId);
+            if (!pending) return;
+            pendingRematches.delete(msg.gameId);
+            ws.publish(msg.gameId, JSON.stringify({ type: 'REMATCH_DECLINED', gameId: msg.gameId }));
+
+        } else if (msg.type === 'CHALLENGE_REQUEST') {
+            const userId = authenticatedUsers.get(ws.id);
+            if (!userId) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Login required to challenge friends' }));
+                return;
+            }
+
+            const targetUserId = msg.targetUserId;
+            const timeControl = typeof msg.timeControl === 'number' ? Math.min(Math.max(msg.timeControl, 1), 60) : 10;
+
+            if (typeof targetUserId !== 'string' || targetUserId.length !== 24) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Invalid target user' }));
+                return;
+            }
+            if (targetUserId === userId) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: "Can't challenge yourself" }));
+                return;
+            }
+
+            // Check target is online
+            const targetWsIds = getUserWsIds(targetUserId);
+            if (targetWsIds.length === 0) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Friend is offline' }));
+                return;
+            }
+
+            // Fetch challenger name
+            let challengerName = 'Player';
+            const challenger = await User.findById(userId).select('username profile.displayName');
+            if (challenger) challengerName = (challenger as any).profile?.displayName || (challenger as any).username;
+
+            const challengeId = `chal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+            const expiresAt = Date.now() + 60000; // 60 seconds
+
+            pendingChallenges.set(challengeId, {
+                challengeId,
+                challengerUserId: userId,
+                challengerWsId: ws.id,
+                challengerName,
+                targetUserId,
+                timeControl,
+                expiresAt,
+            });
+
+            // Notify target via personal channel
+            app.server?.publish(`user:${targetUserId}`, JSON.stringify({
+                type: 'CHALLENGE_RECEIVED',
+                challengeId,
+                challengerName,
+                challengerUserId: userId,
+                timeControl,
+                expiresAt,
+            }));
+
+            // Confirm to challenger
+            ws.send(JSON.stringify({
+                type: 'CHALLENGE_SENT',
+                challengeId,
+                targetUserId,
+                timeControl,
+                expiresAt,
+            }));
+
+        } else if (msg.type === 'CHALLENGE_ACCEPT') {
+            const userId = authenticatedUsers.get(ws.id);
+            if (!userId) return;
+
+            const challenge = pendingChallenges.get(msg.challengeId);
+            if (!challenge) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Challenge expired or not found' }));
+                return;
+            }
+            if (challenge.targetUserId !== userId) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Not authorized' }));
+                return;
+            }
+            if (Date.now() > challenge.expiresAt) {
+                pendingChallenges.delete(msg.challengeId);
+                ws.send(JSON.stringify({ type: 'CHALLENGE_EXPIRED', challengeId: msg.challengeId }));
+                return;
+            }
+
+            pendingChallenges.delete(msg.challengeId);
+
+            // Create the game (challenger is white, target is black)
+            const gameId = gameManager.createMatchedGameForRematch(
+                challenge.challengerUserId, challenge.challengerUserId,
+                userId, userId,
+                challenge.timeControl
+            );
+
+            const game = gameManager.getGame(gameId);
+            const { whiteName, blackName } = await fetchPlayerNames(game);
+
+            // Subscribe acceptor
+            ws.subscribe(gameId);
+
+            // Notify challenger via their personal channel — every active ws of theirs
+            app.server?.publish(`user:${challenge.challengerUserId}`, JSON.stringify({
+                type: 'CHALLENGE_ACCEPTED',
+                gameId,
+                color: 'w',
+                fen: game?.fen,
+                timeRemaining: game?.timeRemaining,
+                history: [],
+                whitePlayerName: whiteName,
+                blackPlayerName: blackName,
+            }));
+
+            // Send game info to acceptor
+            ws.send(JSON.stringify({
+                type: 'CHALLENGE_ACCEPTED',
+                gameId,
+                color: 'b',
+                fen: game?.fen,
+                timeRemaining: game?.timeRemaining,
+                history: [],
+                whitePlayerName: whiteName,
+                blackPlayerName: blackName,
+            }));
+
+        } else if (msg.type === 'CHALLENGE_DECLINE') {
+            const challenge = pendingChallenges.get(msg.challengeId);
+            if (!challenge) return;
+            pendingChallenges.delete(msg.challengeId);
+
+            app.server?.publish(`user:${challenge.challengerUserId}`, JSON.stringify({
+                type: 'CHALLENGE_DECLINED',
+                challengeId: msg.challengeId,
+            }));
+
         } else if (msg.type === 'CHAT_MESSAGE') {
             if (!isValidGameId(msg.gameId)) return;
             const playerId = users.get(ws.id);
@@ -509,6 +772,8 @@ app.ws('/ws', {
     close(ws) {
         console.log('Client disconnected:', ws.id);
         const playerId = users.get(ws.id);
+        const userId = authenticatedUsers.get(ws.id);
+        if (userId) removeUserWs(userId, ws.id);
         users.delete(ws.id);
         authenticatedUsers.delete(ws.id);
         guestIds.delete(ws.id);
@@ -723,3 +988,22 @@ setInterval(() => {
         console.log(`[Main] Cleaned up ${cleanedCount} abandoned games`);
     }
 }, 5 * 60 * 1000);
+
+// Expire pending challenges every 5 seconds
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, challenge] of pendingChallenges.entries()) {
+        if (now > challenge.expiresAt) {
+            pendingChallenges.delete(id);
+            // Notify both sides
+            app.server?.publish(`user:${challenge.challengerUserId}`, JSON.stringify({
+                type: 'CHALLENGE_EXPIRED',
+                challengeId: id,
+            }));
+            app.server?.publish(`user:${challenge.targetUserId}`, JSON.stringify({
+                type: 'CHALLENGE_EXPIRED',
+                challengeId: id,
+            }));
+        }
+    }
+}, 5000);

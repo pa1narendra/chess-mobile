@@ -207,6 +207,173 @@ class ApiService {
     }
   }
 
+  // --- Puzzles ---
+  static Future<Map<String, dynamic>> getDailyPuzzle() async {
+    final url = '$baseUrl/api/puzzles/daily';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Puzzle unavailable', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch puzzle');
+    }
+  }
+
+  static Future<Map<String, dynamic>> getRandomPuzzle({String difficulty = 'normal'}) async {
+    final url = '$baseUrl/api/puzzles/random?difficulty=$difficulty';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Puzzle unavailable', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch puzzle');
+    }
+  }
+
+  static Future<Map<String, dynamic>> getPuzzleProgress(String token) async {
+    final url = '$baseUrl/api/puzzles/progress';
+    try {
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to fetch progress', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch progress');
+    }
+  }
+
+  static Future<Map<String, dynamic>> recordPuzzleResult(String token, {required bool success, int? puzzleRating}) async {
+    final url = '$baseUrl/api/puzzles/solved';
+    try {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+        body: jsonEncode({'success': success, if (puzzleRating != null) 'puzzleRating': puzzleRating}),
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to record result', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to record result');
+    }
+  }
+
+  // --- Opening Explorer (Lichess Masters DB) ---
+  static Future<Map<String, dynamic>> getOpeningExplorer(String fen) async {
+    // Lichess Masters database - ~2M master-level games
+    final url = 'https://explorer.lichess.ovh/masters?fen=${Uri.encodeQueryComponent(fen)}&moves=8&topGames=0';
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Opening explorer unavailable', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Opening explorer unavailable');
+    }
+  }
+
+  // --- Friends ---
+  static Future<Map<String, dynamic>> searchUsers(String token, String query) async {
+    final url = '$baseUrl/api/users/search?q=${Uri.encodeQueryComponent(query)}';
+    try {
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Search failed', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Search failed');
+    }
+  }
+
+  static Future<Map<String, dynamic>> getFriends(String token) async {
+    final url = '$baseUrl/api/friends';
+    try {
+      final response = await http.get(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to fetch friends', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to fetch friends');
+    }
+  }
+
+  static Future<Map<String, dynamic>> sendFriendRequest(String token, String userId) async {
+    final url = '$baseUrl/api/friends/request';
+    try {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
+        body: jsonEncode({'userId': userId}),
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException(jsonDecode(response.body)['error'] ?? 'Failed', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to send friend request');
+    }
+  }
+
+  static Future<Map<String, dynamic>> acceptFriendRequest(String token, String friendshipId) async {
+    final url = '$baseUrl/api/friends/$friendshipId/accept';
+    try {
+      final response = await http.put(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to accept', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to accept');
+    }
+  }
+
+  static Future<Map<String, dynamic>> removeFriend(String token, String friendshipId) async {
+    final url = '$baseUrl/api/friends/$friendshipId';
+    try {
+      final response = await http.delete(
+        Uri.parse(url),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(_timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return jsonDecode(response.body);
+      }
+      throw ApiException('Failed to remove', statusCode: response.statusCode);
+    } catch (e) {
+      if (e is ApiException) rethrow;
+      throw ApiException('Failed to remove friend');
+    }
+  }
+
   static Future<Map<String, dynamic>> analyzeGame(String gameId, String token) async {
     final url = '$baseUrl/api/games/$gameId/analyze';
     _log('Request: POST $url');

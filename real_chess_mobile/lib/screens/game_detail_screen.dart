@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:chess/chess.dart' as chess_lib;
 import 'package:flutter_chess_board/flutter_chess_board.dart' hide Color;
+import 'package:share_plus/share_plus.dart';
 import '../api/api_service.dart';
 import '../widgets/custom_chess_board.dart';
 import '../main.dart';
@@ -75,6 +77,51 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
     _boardController.loadFen(_fens[index]);
   }
 
+  void _sharePgn() async {
+    final pgn = _game?['pgn'] as String?;
+    if (pgn == null || pgn.isEmpty) {
+      // Build PGN from moves if backend didn't save it
+      final moves = (_game?['moves'] as List?)?.cast<String>() ?? [];
+      if (moves.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No moves to share')),
+        );
+        return;
+      }
+    }
+
+    final whiteName = _game?['whiteName'] ?? 'White';
+    final blackName = _game?['blackName'] ?? 'Black';
+    final result = _game?['result'];
+    final winner = result?['winner'];
+    final resultStr = winner == 'w' ? '1-0' : winner == 'b' ? '0-1' : '1/2-1/2';
+
+    // Build PGN with headers
+    final pgnText = '''[Event "Chessing Online Game"]
+[Site "Chessing"]
+[Date "${DateTime.now().toIso8601String().split('T')[0]}"]
+[White "$whiteName"]
+[Black "$blackName"]
+[Result "$resultStr"]
+
+${pgn ?? _sans.asMap().entries.map((e) {
+      final moveNum = (e.key ~/ 2) + 1;
+      return e.key % 2 == 0 ? '$moveNum. ${e.value}' : e.value;
+    }).join(' ')} $resultStr''';
+
+    try {
+      await Share.share(pgnText, subject: 'Chess Game ${widget.gameId}');
+    } catch (_) {
+      // Fallback: copy to clipboard
+      await Clipboard.setData(ClipboardData(text: pgnText));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PGN copied to clipboard'), backgroundColor: AppColors.emeraldGreen),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -84,6 +131,11 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
         title: Text('Game ${widget.gameId}', style: const TextStyle(color: AppColors.textPrimary, fontSize: 16)),
         iconTheme: const IconThemeData(color: AppColors.textPrimary),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.share_outlined, color: AppColors.textSecondary),
+            tooltip: 'Share PGN',
+            onPressed: _sharePgn,
+          ),
           IconButton(
             icon: const Icon(Icons.analytics_outlined, color: AppColors.tealAccent),
             tooltip: 'Analyze',

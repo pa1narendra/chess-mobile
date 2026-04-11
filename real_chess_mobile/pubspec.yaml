@@ -21,6 +21,7 @@ dependencies:
   connectivity_plus: ^6.0.3
   audioplayers: ^6.4.0
   emoji_picker_flutter: ^4.4.0
+  share_plus: ^13.0.0
 
 dev_dependencies:
   flutter_test:

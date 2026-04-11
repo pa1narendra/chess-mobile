@@ -9,6 +9,8 @@ import 'game_screen.dart';
 import 'game_history_screen.dart';
 import 'leaderboard_screen.dart';
 import 'profile_screen.dart';
+import 'friends_screen.dart';
+import 'puzzles_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,6 +21,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _hasNavigatedToGame = false;
+  bool _hasShownChallengeDialog = false;
 
   @override
   void initState() {
@@ -38,6 +41,59 @@ class _HomeScreenState extends State<HomeScreen> {
     auth.onLogout = () {
       game.disconnectSocket();
     };
+  }
+
+  void _showIncomingChallengeDialog(BuildContext context, GameProvider game) {
+    final challenge = game.incomingChallenge;
+    if (challenge == null) return;
+
+    final challengerName = challenge['challengerName'] ?? 'Player';
+    final timeControl = challenge['timeControl'] ?? 10;
+    final challengeId = challenge['challengeId'];
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceDark,
+        title: Row(
+          children: [
+            const Icon(Icons.sports_esports_rounded, color: AppColors.tealAccent),
+            const SizedBox(width: 8),
+            const Flexible(child: Text('Challenge!', style: TextStyle(color: AppColors.textPrimary))),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$challengerName has challenged you to a $timeControl-minute game',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 14),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            const Text('Expires in 60 seconds', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              game.declineChallenge(challengeId);
+              Navigator.pop(ctx);
+            },
+            child: const Text('Decline', style: TextStyle(color: AppColors.roseError)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              game.acceptChallenge(challengeId);
+              Navigator.pop(ctx);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.tealAccent),
+            child: const Text('Accept', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -60,6 +116,28 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         } else if (!game.isInGame) {
           _hasNavigatedToGame = false;
+        }
+
+        // Show incoming challenge dialog
+        if (game.incomingChallenge != null && !_hasShownChallengeDialog) {
+          _hasShownChallengeDialog = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _showIncomingChallengeDialog(context, game);
+          });
+        } else if (game.incomingChallenge == null) {
+          _hasShownChallengeDialog = false;
+        }
+
+        // Show challenge status snackbar (sent/declined/expired)
+        if (game.challengeStatusMessage != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(game.challengeStatusMessage!), backgroundColor: AppColors.tealAccent),
+              );
+              game.clearChallengeStatus();
+            }
+          });
         }
 
         return Scaffold(
@@ -151,6 +229,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   gradient: [AppColors.tealAccent, AppColors.emeraldGreen],
                   onTap: () => _showPlayOptionsDialog(context, game),
                 ),
+                const SizedBox(height: 12),
+
+                GameModeCard(
+                  title: 'Puzzles',
+                  subtitle: 'Daily puzzle and tactics training',
+                  icon: Icons.extension_rounded,
+                  gradient: [AppColors.amberWarning, Colors.deepOrange],
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PuzzlesScreen())),
+                ),
 
                 const SizedBox(height: 32),
 
@@ -186,16 +273,25 @@ class _HomeScreenState extends State<HomeScreen> {
                         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const GameHistoryScreen())),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: _buildNavCard(
                         icon: Icons.leaderboard_rounded,
-                        label: 'Leaderboard',
+                        label: 'Leaders',
                         color: AppColors.amberWarning,
                         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaderboardScreen())),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _buildNavCard(
+                        icon: Icons.people_alt_rounded,
+                        label: 'Friends',
+                        color: AppColors.electricBlue,
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FriendsScreen())),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: _buildNavCard(
                         icon: Icons.person_rounded,
@@ -595,6 +691,70 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _showCreateGameTimeDialog(BuildContext context, GameProvider game) {
+    final timeControls = [
+      {'minutes': 1, 'label': '1 min', 'subtitle': 'Bullet', 'color': AppColors.roseError},
+      {'minutes': 3, 'label': '3 min', 'subtitle': 'Blitz', 'color': Colors.deepOrange},
+      {'minutes': 5, 'label': '5 min', 'subtitle': 'Blitz', 'color': AppColors.amberWarning},
+      {'minutes': 10, 'label': '10 min', 'subtitle': 'Rapid', 'color': AppColors.tealAccent},
+      {'minutes': 15, 'label': '15 min', 'subtitle': 'Rapid', 'color': AppColors.electricBlue},
+      {'minutes': 30, 'label': '30 min', 'subtitle': 'Classical', 'color': AppColors.purpleAccent},
+    ];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.timer_rounded, color: AppColors.amberWarning),
+            const SizedBox(width: 8),
+            const Flexible(child: Text('Select Time')),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: timeControls.map((tc) {
+              final color = tc['color'] as Color;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.borderColor),
+                ),
+                child: ListTile(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  leading: Container(
+                    width: 44, height: 44,
+                    decoration: BoxDecoration(
+                      color: color.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: color.withOpacity(0.5)),
+                    ),
+                    child: Center(
+                      child: Text('${tc['minutes']}', style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16)),
+                    ),
+                  ),
+                  title: Text(tc['label'] as String, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(tc['subtitle'] as String, style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.textMuted),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    game.createGame('${tc['minutes']}+0', isBot: false);
+                  },
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+        ],
+      ),
+    );
+  }
+
   void _showBotDifficultyDialog(BuildContext context, GameProvider game) {
     showDialog(
       context: context,
@@ -726,7 +886,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 trailing: Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.textMuted),
                 onTap: () {
                   Navigator.pop(ctx);
-                  game.createGame('10+0', isBot: false);
+                  _showCreateGameTimeDialog(context, game);
                 },
               ),
             ),
