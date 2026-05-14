@@ -32,7 +32,7 @@ class AuthProvider with ChangeNotifier {
         try {
           _user = jsonDecode(cachedUserJson) as Map<String, dynamic>;
         } catch (e) {
-          print('[Auth] Failed to parse cached user data: $e');
+          debugPrint('[Auth] Failed to parse cached user data: $e');
         }
       }
 
@@ -52,16 +52,16 @@ class AuthProvider with ChangeNotifier {
         } catch (e) {
           // Only clear session if we KNOW the token is invalid (401)
           if (e is ApiException && e.statusCode == 401) {
-            print('[Auth] Token expired or invalid (401). Clearing session.');
+            debugPrint('[Auth] Token expired or invalid (401). Clearing session.');
             await _clearSession(prefs);
           } else {
-            print('[Auth] Verification failed ($e) but keeping session with cached data.');
+            debugPrint('[Auth] Verification failed ($e) but keeping session with cached data.');
             // Keep using cached user data
           }
         }
       }
     } catch (e) {
-      print('[Auth] Init error: $e');
+      debugPrint('[Auth] Init error: $e');
       // SharedPreferences error - continue without auth
     }
 

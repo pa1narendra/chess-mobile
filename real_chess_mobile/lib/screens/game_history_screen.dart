@@ -81,8 +81,9 @@ class _GameHistoryScreenState extends State<GameHistoryScreen> {
         _page++;
         _isLoadingMore = false;
       });
-    } catch (_) {
-      setState(() => _isLoadingMore = false);
+    } catch (e) {
+      debugPrint('[History] Failed to load more games: $e');
+      if (mounted) setState(() => _isLoadingMore = false);
     }
   }
 

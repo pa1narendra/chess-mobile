@@ -44,8 +44,10 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
     if (token == null) return;
     try {
       final result = await ApiService.getPuzzleProgress(token);
-      setState(() => _progress = result['data']);
-    } catch (_) {}
+      if (mounted) setState(() => _progress = result['data']);
+    } catch (e) {
+      debugPrint('[Puzzles] Failed to load progress: $e');
+    }
   }
 
   Future<void> _loadPuzzle({bool daily = false}) async {
@@ -55,6 +57,8 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
       _puzzleComplete = false;
       _showedSolution = false;
       _solutionIndex = 0;
+      _lastMoveWasWrong = false;
+      _recordedFailureForThisPuzzle = false;
       _status = 'Loading...';
     });
 
@@ -64,28 +68,28 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
           : await ApiService.getRandomPuzzle();
       final data = result['data'] as Map<String, dynamic>;
 
-      // Lichess puzzle format:
-      // { game: { pgn: "e4 e5 ..." }, puzzle: { initialPly, solution: [uci...], rating, themes } }
-      final pgn = data['game']?['pgn'] as String?;
+      // Lichess provides the puzzle FEN directly — use it instead of replaying PGN
+      // (some PGNs have ambiguous SAN that the Dart chess package can't parse)
       final puzzle = data['puzzle'] as Map<String, dynamic>?;
-      if (pgn == null || puzzle == null) throw Exception('Invalid puzzle data');
+      if (puzzle == null) throw Exception('Invalid puzzle data');
 
-      final initialPly = (puzzle['initialPly'] as num?)?.toInt() ?? 0;
-      final solution = (puzzle['solution'] as List?)?.cast<String>() ?? [];
-
-      // Replay game up to initialPly
-      final chess = chess_lib.Chess();
-      final moves = pgn.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
-
-      // Apply moves up to and INCLUDING initialPly (the last move before puzzle starts)
-      // Lichess convention: after applying initialPly+1 moves, it's the puzzle solver's turn
-      for (int i = 0; i <= initialPly && i < moves.length; i++) {
-        final san = moves[i];
-        chess.move(san);
+      final puzzleFen = puzzle['fen'] as String?;
+      if (puzzleFen == null || puzzleFen.isEmpty) {
+        throw Exception('Puzzle FEN missing');
       }
 
-      // Whose turn it is now = user's color
-      final userColor = chess.turn == chess_lib.Color.WHITE ? PlayerColor.white : PlayerColor.black;
+      final solution = (puzzle['solution'] as List?)?.cast<String>() ?? [];
+      if (solution.isEmpty) throw Exception('No solution provided');
+
+      // Build local chess instance from FEN
+      final chess = chess_lib.Chess.fromFEN(puzzleFen);
+
+      // Determine user color from FEN turn indicator
+      final fenParts = puzzleFen.split(' ');
+      final turnChar = fenParts.length > 1 ? fenParts[1] : 'w';
+      final userColor = turnChar == 'w' ? PlayerColor.white : PlayerColor.black;
+
+      debugPrint('[Puzzle] Loaded — turn=$turnChar, solution[0]=${solution[0]}, fen=$puzzleFen');
 
       setState(() {
         _puzzleData = data;
@@ -98,7 +102,7 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
         _isLoading = false;
       });
 
-      _boardController.loadFen(chess.fen);
+      _boardController.loadFen(puzzleFen);
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -107,58 +111,60 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
     }
   }
 
+  // Tracks whether the user's CURRENT pending move was correct so we can show feedback
+  // and let them undo without instantly punishing them.
+  bool _lastMoveWasWrong = false;
+  bool _recordedFailureForThisPuzzle = false;
+
   void _onMove() {
     if (_puzzleComplete || _chess == null) return;
 
-    // Get the last move from the controller
     final controllerGame = _boardController.game;
     final history = controllerGame.history;
     if (history.isEmpty) return;
 
-    // Compare against expected solution move
+    final lastMove = history.last.move;
+    final userMove = '${lastMove.fromAlgebraic}${lastMove.toAlgebraic}${lastMove.promotion?.name ?? ''}';
+
     final expected = _solution[_solutionIndex];
 
-    // Get the user's move in UCI format
-    // The chess package history stores State objects with move details
-    // We need to check what move was made by comparing FENs or using the controller's last move
-    // Simpler: use controllerGame.san_moves().last to get SAN, but we need UCI.
-    // chess.js stores move objects with from/to/promotion.
+    debugPrint('[Puzzle] User played: $userMove, expected: $expected, '
+        'solutionIndex: $_solutionIndex/${_solution.length}');
 
-    // Get the actual move made
-    final lastMoveMap = controllerGame.undo_move();
-    if (lastMoveMap == null) return;
-    // Re-apply the move
-    controllerGame.move(lastMoveMap);
+    final stripPromo = (String m) => m.length > 4 ? m.substring(0, 4) : m;
+    final isCorrect = userMove == expected ||
+        stripPromo(userMove) == stripPromo(expected);
 
-    final userMove = '${lastMoveMap.fromAlgebraic}${lastMoveMap.toAlgebraic}${lastMoveMap.promotion?.name ?? ''}';
-
-    if (userMove == expected || userMove.replaceAll(RegExp(r'[qrbn]$'), '') == expected.replaceAll(RegExp(r'[qrbn]$'), '')) {
-      // Correct!
+    if (isCorrect) {
       _solutionIndex++;
-      _status = 'Correct!';
+      _lastMoveWasWrong = false;
 
       if (_solutionIndex >= _solution.length) {
-        // Puzzle solved!
         setState(() {
           _puzzleComplete = true;
           _status = 'Solved!';
         });
-        _recordResult(true);
+        // Only record as success if user never showed the solution AND never recorded a failure
+        if (!_showedSolution && !_recordedFailureForThisPuzzle) {
+          _recordResult(true);
+        }
         return;
       }
 
-      // Play the opponent's response automatically after a short delay
+      setState(() => _status = 'Correct!');
+
+      // Play opponent's response after a short delay
       Future.delayed(const Duration(milliseconds: 500), () {
-        if (!mounted || _chess == null) return;
+        if (!mounted || _chess == null || _solutionIndex >= _solution.length) return;
         final oppMove = _solution[_solutionIndex];
         final from = oppMove.substring(0, 2);
         final to = oppMove.substring(2, 4);
         final promotion = oppMove.length > 4 ? oppMove[4] : null;
 
-        _boardController.makeMove(from: from, to: to);
         if (promotion != null) {
-          // For promotion, use makeMoveWithPromotion
           _boardController.makeMoveWithPromotion(from: from, to: to, pieceToPromoteTo: promotion);
+        } else {
+          _boardController.makeMove(from: from, to: to);
         }
 
         setState(() {
@@ -167,13 +173,67 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
         });
       });
     } else {
-      // Wrong move - undo it and show feedback
-      _boardController.undoMove();
+      // Wrong move — DO NOT undo. Let them keep exploring, show soft feedback.
       setState(() {
-        _status = 'Wrong move, try again';
-        _showedSolution = true;
+        _status = "Not the puzzle's move — Undo to try again";
+        _lastMoveWasWrong = true;
       });
+      // Record failure once per puzzle so rating isn't double-penalized
+      if (!_recordedFailureForThisPuzzle) {
+        _recordedFailureForThisPuzzle = true;
+        _recordResult(false);
+      }
+    }
+  }
+
+  void _undoLastMove() {
+    if (_chess == null) return;
+    _boardController.undoMove();
+    setState(() {
+      _lastMoveWasWrong = false;
+      _status = 'Your turn';
+    });
+  }
+
+  Future<void> _showSolution() async {
+    if (_puzzleData == null) return;
+    final puzzleFen = _puzzleData!['puzzle']?['fen'] as String?;
+    if (puzzleFen == null) return;
+
+    setState(() {
+      _showedSolution = true;
+      _lastMoveWasWrong = false;
+      _status = 'Showing solution...';
+    });
+    if (!_recordedFailureForThisPuzzle) {
+      _recordedFailureForThisPuzzle = true;
       _recordResult(false);
+    }
+
+    // Reset to puzzle starting position, then animate each solution move
+    _boardController.loadFen(puzzleFen);
+    await Future.delayed(const Duration(milliseconds: 600));
+
+    for (int i = 0; i < _solution.length; i++) {
+      if (!mounted) return;
+      final move = _solution[i];
+      final from = move.substring(0, 2);
+      final to = move.substring(2, 4);
+      final promotion = move.length > 4 ? move[4] : null;
+
+      if (promotion != null) {
+        _boardController.makeMoveWithPromotion(from: from, to: to, pieceToPromoteTo: promotion);
+      } else {
+        _boardController.makeMove(from: from, to: to);
+      }
+      await Future.delayed(const Duration(milliseconds: 800));
+    }
+
+    if (mounted) {
+      setState(() {
+        _puzzleComplete = true;
+        _status = 'Solution shown';
+      });
     }
   }
 
@@ -190,7 +250,9 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
           _progress = {...?_progress, 'puzzleRating': newRating};
         });
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[Puzzles] Failed to record result: $e');
+    }
   }
 
   @override
@@ -251,10 +313,15 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
     Color statusColor = AppColors.textSecondary;
     if (_status == 'Correct!') statusColor = AppColors.emeraldGreen;
     if (_status == 'Solved!') statusColor = AppColors.tealAccent;
-    if (_status.startsWith('Wrong')) statusColor = AppColors.roseError;
+    if (_lastMoveWasWrong) statusColor = AppColors.amberWarning;
 
-    return Column(
-      children: [
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Reserve ~220px for top info bar (60) + status (40) + themes (40) + actions (80)
+        final maxBoardSize = (constraints.maxHeight - 220).clamp(200.0, constraints.maxWidth);
+
+        return Column(
+          children: [
         // Info bar
         Container(
           padding: const EdgeInsets.all(12),
@@ -280,40 +347,58 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
           ),
         ),
 
-        // Status banner
+        // Status banner — softer styling, with Undo button when wrong move was made
         Container(
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           color: statusColor.withValues(alpha: 0.1),
-          child: Center(
-            child: Text(
-              _puzzleComplete
-                  ? 'Puzzle Solved! ${_userColor == PlayerColor.white ? "Find the win for White" : "Find the win for Black"}'
-                  : '${_userColor == PlayerColor.white ? "White" : "Black"} to play — $_status',
-              style: TextStyle(color: statusColor, fontSize: 14, fontWeight: FontWeight.w600),
-              textAlign: TextAlign.center,
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _puzzleComplete
+                      ? 'Puzzle Solved!'
+                      : '${_userColor == PlayerColor.white ? "White" : "Black"} to play — $_status',
+                  style: TextStyle(color: statusColor, fontSize: 13, fontWeight: FontWeight.w600),
+                  textAlign: _lastMoveWasWrong ? TextAlign.start : TextAlign.center,
+                ),
+              ),
+              if (_lastMoveWasWrong)
+                TextButton.icon(
+                  onPressed: _undoLastMove,
+                  icon: const Icon(Icons.undo_rounded, size: 16, color: AppColors.tealAccent),
+                  label: const Text('Undo', style: TextStyle(color: AppColors.tealAccent, fontSize: 13)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    minimumSize: const Size(0, 32),
+                  ),
+                ),
+            ],
           ),
         ),
 
-        // Board
-        Padding(
-          padding: const EdgeInsets.all(4),
-          child: CustomChessBoard(
-            controller: _boardController,
-            enableUserMoves: !_puzzleComplete,
-            boardOrientation: _userColor,
-            onMove: _onMove,
+        // Board — constrained so it doesn't push other elements off-screen
+        Center(
+          child: SizedBox(
+            width: maxBoardSize,
+            height: maxBoardSize,
+            child: CustomChessBoard(
+              controller: _boardController,
+              enableUserMoves: !_puzzleComplete,
+              boardOrientation: _userColor,
+              onMove: _onMove,
+            ),
           ),
         ),
 
         // Themes
         if (themes.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
             child: Wrap(
               spacing: 6,
               runSpacing: 6,
-              children: themes.take(5).map((theme) => Container(
+              alignment: WrapAlignment.center,
+              children: themes.take(4).map((theme) => Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: AppColors.surfaceLight,
@@ -346,13 +431,7 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        _showedSolution = true;
-                        _status = 'Showed solution';
-                      });
-                      _recordResult(false);
-                    },
+                    onPressed: _showSolution,
                     icon: const Icon(Icons.visibility_outlined, color: AppColors.amberWarning),
                     label: const Text('Show Solution', style: TextStyle(color: AppColors.amberWarning)),
                     style: OutlinedButton.styleFrom(
@@ -366,6 +445,8 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
           ),
         ),
       ],
+    );
+      },
     );
   }
 }

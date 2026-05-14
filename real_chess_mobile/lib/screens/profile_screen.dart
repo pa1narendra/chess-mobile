@@ -78,6 +78,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
       // Refresh user data in auth provider
       await Provider.of<AuthProvider>(context, listen: false).refreshUser();
+      if (!mounted) return;
 
       setState(() {
         _isEditing = false;

@@ -899,7 +899,7 @@ export class GameManager {
         const playerColor = game.players.w === playerId ? 'w' : (game.players.b === playerId ? 'b' : null);
         if (!playerColor) return;
 
-        // If very early in the game (< 2 full moves), abort instead of resign
+        // If very early in the game (< 2 plies / half-moves), abort instead of resign
         // Aborted games don't count for rating changes
         if (game.history.length < 2) {
             this.handleGameOver(gameId, null, 'aborted');

@@ -56,7 +56,7 @@ class _CustomButtonState extends State<CustomButton> {
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
-              color: baseColor.withOpacity(0.3),
+              color: baseColor.withValues(alpha: 0.3),
               blurRadius: 12,
               offset: const Offset(0, 4),
             ),
@@ -184,7 +184,7 @@ class _GameModeCardState extends State<GameModeCard> {
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
-              color: widget.gradient[0].withOpacity(0.3),
+              color: widget.gradient[0].withValues(alpha: 0.3),
               blurRadius: 12,
               offset: const Offset(0, 6),
             ),
@@ -205,7 +205,7 @@ class _GameModeCardState extends State<GameModeCard> {
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
+                      color: Colors.white.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: widget.isLoading
@@ -236,7 +236,7 @@ class _GameModeCardState extends State<GameModeCard> {
                         Text(
                           widget.subtitle,
                           style: TextStyle(
-                            color: Colors.white.withOpacity(0.8),
+                            color: Colors.white.withValues(alpha: 0.8),
                             fontSize: 14,
                           ),
                         ),
@@ -245,7 +245,7 @@ class _GameModeCardState extends State<GameModeCard> {
                   ),
                   Icon(
                     Icons.arrow_forward_ios_rounded,
-                    color: Colors.white.withOpacity(0.8),
+                    color: Colors.white.withValues(alpha: 0.8),
                     size: 20,
                   ),
                 ],

@@ -182,7 +182,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   margin: const EdgeInsets.only(right: 8),
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: AppColors.purpleAccent.withOpacity(0.2),
+                    color: AppColors.purpleAccent.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Icon(Icons.computer_rounded, color: AppColors.purpleAccent, size: 20),
@@ -357,7 +357,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                                     game.selectedSquare!,
                                     squareSize,
                                     game.playerColor == 'w',
-                                    AppColors.electricBlue.withOpacity(0.4),
+                                    AppColors.electricBlue.withValues(alpha: 0.4),
                                   ),
                                 // Legal moves highlights
                                 ...game.legalMoves.map((square) => _buildLegalMoveIndicator(
@@ -705,9 +705,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.roseError.withOpacity(0.1),
+        color: AppColors.roseError.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.roseError.withOpacity(0.3)),
+        border: Border.all(color: AppColors.roseError.withValues(alpha: 0.3)),
       ),
       child: Row(
         children: [
@@ -860,9 +860,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: AppColors.amberWarning.withOpacity(0.1),
+        color: AppColors.amberWarning.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.amberWarning.withOpacity(0.3)),
+        border: Border.all(color: AppColors.amberWarning.withValues(alpha: 0.3)),
       ),
       child: Row(
         children: [
@@ -900,7 +900,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: isCurrentTurn
-            ? AppColors.tealAccent.withOpacity(0.1)
+            ? AppColors.tealAccent.withValues(alpha: 0.1)
             : AppColors.surfaceDark,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
@@ -923,7 +923,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
               boxShadow: isCurrentTurn
                   ? [
                       BoxShadow(
-                        color: AppColors.tealAccent.withOpacity(0.3),
+                        color: AppColors.tealAccent.withValues(alpha: 0.3),
                         blurRadius: 8,
                       ),
                     ]
@@ -1023,9 +1023,9 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(
-                color: AppColors.purpleAccent.withOpacity(0.2),
+                color: AppColors.purpleAccent.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.purpleAccent.withOpacity(0.5)),
+                border: Border.all(color: AppColors.purpleAccent.withValues(alpha: 0.5)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -1052,8 +1052,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   decoration: BoxDecoration(
                     color: isLowTime
-                        ? AppColors.roseError.withOpacity(
-                            isCurrentTurn ? 0.2 + (_pulseController.value * 0.1) : 0.2)
+                        ? AppColors.roseError.withValues(
+                            alpha: isCurrentTurn ? 0.2 + (_pulseController.value * 0.1) : 0.2)
                         : AppColors.surfaceLight,
                     borderRadius: BorderRadius.circular(10),
                     border: isLowTime
@@ -1117,7 +1117,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       margin: const EdgeInsets.only(right: 8),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.2),
+        color: color.withValues(alpha: 0.2),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Icon(icon, color: color, size: 20),
@@ -1130,7 +1130,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     final isAbort = game.moveHistory.length < 2;
     final title = isAbort ? 'Abort Game?' : 'Resign?';
     final body = isAbort
-        ? 'No moves have been played. You can abort without rating loss.'
+        ? 'The game has barely started. You can abort without rating loss.'
         : 'Are you sure you want to resign this game? This cannot be undone.';
     final buttonLabel = isAbort ? 'Abort' : 'Resign';
 
@@ -1257,7 +1257,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: AppColors.roseError.withOpacity(0.8),
+                      color: AppColors.roseError.withValues(alpha: 0.8),
                       width: 3,
                     ),
                   ),
@@ -1267,11 +1267,11 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
                   width: squareSize * 0.35,
                   height: squareSize * 0.35,
                   decoration: BoxDecoration(
-                    color: AppColors.tealAccent.withOpacity(0.7),
+                    color: AppColors.tealAccent.withValues(alpha: 0.7),
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: AppColors.tealAccent.withOpacity(0.4),
+                        color: AppColors.tealAccent.withValues(alpha: 0.4),
                         blurRadius: 4,
                         spreadRadius: 1,
                       ),
@@ -1368,15 +1368,15 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: isViewingThisMove
                 ? BoxDecoration(
-                    color: AppColors.purpleAccent.withOpacity(0.3),
+                    color: AppColors.purpleAccent.withValues(alpha: 0.3),
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(color: AppColors.purpleAccent),
                   )
                 : isLastMove
                     ? BoxDecoration(
-                        color: AppColors.tealAccent.withOpacity(0.2),
+                        color: AppColors.tealAccent.withValues(alpha: 0.2),
                         borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: AppColors.tealAccent.withOpacity(0.5)),
+                        border: Border.all(color: AppColors.tealAccent.withValues(alpha: 0.5)),
                       )
                     : null,
             child: Text(
@@ -1405,7 +1405,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
             margin: const EdgeInsets.only(left: 8),
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color: AppColors.tealAccent.withOpacity(0.2),
+              color: AppColors.tealAccent.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(4),
               border: Border.all(color: AppColors.tealAccent),
             ),
@@ -1435,7 +1435,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       clipBehavior: Clip.hardEdge,
       decoration: BoxDecoration(
         color: isViewingHistory
-            ? AppColors.purpleAccent.withOpacity(0.1)
+            ? AppColors.purpleAccent.withValues(alpha: 0.1)
             : AppColors.surfaceDark,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(

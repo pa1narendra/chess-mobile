@@ -244,7 +244,7 @@ app.ws('/ws', {
 
         const msg = message as any;
         if (!msg || !msg.type) {
-            ws.send({ type: 'ERROR', message: 'Invalid message format' });
+            ws.send(JSON.stringify({ type: 'ERROR', message: 'Invalid message format' }));
             return;
         }
 

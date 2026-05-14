@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../utils/config.dart';
 
@@ -19,15 +20,14 @@ class ApiService {
   static String get baseUrl => Config.baseUrl;
 
   static void _log(String message) {
-    print('[API] $message');
+    debugPrint('[API] $message');
   }
 
   static Future<Map<String, dynamic>> login(String username, String password) async {
     final url = '$baseUrl/auth/login';
     final bodyData = {'username': username, 'password': password};
     
-    _log('Request: POST $url');
-    _log('Body: $bodyData');
+    _log('POST $url');
 
     try {
       final response = await http.post(
@@ -36,8 +36,7 @@ class ApiService {
         body: jsonEncode(bodyData),
       ).timeout(_timeout);
 
-      _log('Response Status: ${response.statusCode}');
-      _log('Response Body: ${response.body}');
+      _log('Response: ${response.statusCode}');
 
       final body = jsonDecode(response.body);
 
@@ -64,8 +63,7 @@ class ApiService {
     final url = '$baseUrl/auth/register';
     final bodyData = {'username': username, 'email': email, 'password': password};
 
-    _log('Request: POST $url');
-    _log('Body: $bodyData');
+    _log('POST $url');
 
     try {
       final response = await http.post(
@@ -74,8 +72,7 @@ class ApiService {
         body: jsonEncode(bodyData),
       ).timeout(_timeout);
 
-      _log('Response Status: ${response.statusCode}');
-      _log('Response Body: ${response.body}');
+      _log('Response: ${response.statusCode}');
 
       final body = jsonDecode(response.body);
 
@@ -100,7 +97,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> getMe(String token) async {
     final url = '$baseUrl/auth/me';
-    _log('Request: GET $url');
+    _log('GET $url');
 
     try {
       final response = await http.get(
@@ -110,8 +107,7 @@ class ApiService {
         },
       ).timeout(_timeout);
 
-      _log('Response Status: ${response.statusCode}');
-      _log('Response Body: ${response.body}');
+      _log('Response: ${response.statusCode}');
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return jsonDecode(response.body);
@@ -376,7 +372,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> analyzeGame(String gameId, String token) async {
     final url = '$baseUrl/api/games/$gameId/analyze';
-    _log('Request: POST $url');
+    _log('POST $url');
 
     try {
       final response = await http.post(
@@ -386,7 +382,7 @@ class ApiService {
         },
       ).timeout(const Duration(seconds: 60)); // Analysis takes time
 
-      _log('Response Status: ${response.statusCode}');
+      _log('Response: ${response.statusCode}');
       
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return jsonDecode(response.body);

@@ -142,7 +142,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           _explorerOpening = result['opening']?['name'];
         });
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[Analysis] Opening explorer error: $e');
       if (mounted) {
         setState(() {
           _explorerMoves = [];
@@ -197,6 +198,28 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         return;
       }
     }
+  }
+
+  bool _hasNextKeyMoment() {
+    if (_evaluations.isEmpty) return false;
+    for (final ev in _evaluations) {
+      final idx = ev['moveIndex'] as int?;
+      final cls = ev['classification'] as String?;
+      if (idx == null || cls == null) continue;
+      if (idx > _currentMoveIndex && _isKeyMoment(cls)) return true;
+    }
+    return false;
+  }
+
+  bool _hasPrevKeyMoment() {
+    if (_evaluations.isEmpty) return false;
+    for (final ev in _evaluations) {
+      final idx = ev['moveIndex'] as int?;
+      final cls = ev['classification'] as String?;
+      if (idx == null || cls == null) continue;
+      if (idx < _currentMoveIndex && _isKeyMoment(cls)) return true;
+    }
+    return false;
   }
 
   bool _isKeyMoment(String classification) {
@@ -484,6 +507,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   Widget _buildNavControls() {
     final canPrev = _currentMoveIndex > 0;
     final canNext = _currentMoveIndex < _fens.length - 1;
+    // Key moment buttons are only enabled if analysis has been done AND there's a key moment in that direction
+    final canPrevKey = _hasAnalysis && _hasPrevKeyMoment();
+    final canNextKey = _hasAnalysis && _hasNextKeyMoment();
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 4),
       color: AppColors.surfaceDark,
@@ -492,9 +518,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         children: [
           if (_hasAnalysis)
             IconButton(
-              onPressed: canPrev ? _jumpToPrevKeyMoment : null,
-              icon: Icon(Icons.fast_rewind_rounded, color: canPrev ? AppColors.amberWarning : AppColors.textMuted, size: 22),
-              tooltip: 'Previous key moment',
+              onPressed: canPrevKey ? _jumpToPrevKeyMoment : null,
+              icon: Icon(Icons.fast_rewind_rounded, color: canPrevKey ? AppColors.amberWarning : AppColors.textMuted, size: 22),
+              tooltip: canPrevKey ? 'Previous key moment' : 'No prior key moment',
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             )
@@ -520,9 +546,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           ),
           if (_hasAnalysis)
             IconButton(
-              onPressed: canNext ? _jumpToNextKeyMoment : null,
-              icon: Icon(Icons.fast_forward_rounded, color: canNext ? AppColors.amberWarning : AppColors.textMuted, size: 22),
-              tooltip: 'Next key moment',
+              onPressed: canNextKey ? _jumpToNextKeyMoment : null,
+              icon: Icon(Icons.fast_forward_rounded, color: canNextKey ? AppColors.amberWarning : AppColors.textMuted, size: 22),
+              tooltip: canNextKey ? 'Next key moment' : 'No more key moments',
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             )

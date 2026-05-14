@@ -1,10 +1,38 @@
 import { Elysia, t } from 'elysia';
 import mongoose from 'mongoose';
+import { Chess } from 'chess.js';
 import { Game } from '../schemas/game';
 import { User } from '../schemas/user';
 import { Friendship } from '../schemas/friendship';
 import { PuzzleProgress } from '../schemas/puzzleProgress';
 import { verifyAuthHeader } from '../middleware/authMiddleware';
+
+/**
+ * Ensures the puzzle response has a `fen` field. Lichess's daily endpoint
+ * provides it; the random endpoint does not — we derive it from PGN using
+ * chess.js (handles SAN correctly, unlike the Dart chess package which fails
+ * on certain ambiguous moves).
+ */
+function ensurePuzzleFen(puzzleResponse: any): any {
+    if (!puzzleResponse?.puzzle || !puzzleResponse?.game?.pgn) return puzzleResponse;
+    if (puzzleResponse.puzzle.fen) return puzzleResponse; // Already present
+
+    try {
+        const chess = new Chess();
+        const moves = puzzleResponse.game.pgn.split(/\s+/).filter((s: string) => s);
+        const initialPly = puzzleResponse.puzzle.initialPly ?? 0;
+
+        // Apply moves up to and including initialPly (after which it's puzzle solver's turn)
+        for (let i = 0; i <= initialPly && i < moves.length; i++) {
+            chess.move(moves[i]);
+        }
+
+        puzzleResponse.puzzle.fen = chess.fen();
+    } catch (e) {
+        console.error('[Puzzles] Failed to derive FEN from PGN:', e);
+    }
+    return puzzleResponse;
+}
 
 export const apiRoutes = new Elysia({ prefix: '/api' })
 
@@ -288,9 +316,11 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
             return { error: 'Authentication required' };
         }
 
-        const users = await User.find({}).lean();
-        let migrated = 0;
+        // Cap the number of users we migrate per call to avoid loading the whole collection
+        const users = await User.find({}).limit(10000).lean();
 
+        // Build bulk operations in parallel — independent per user
+        const ops: any[] = [];
         for (const u of users as any[]) {
             const oldGames = u.gamesPlayed || 0;
             const oldWins = u.wins || 0;
@@ -298,30 +328,31 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
             const oldDraws = u.draws || 0;
             const currentStats = u.stats || {};
 
-            // Only migrate if nested stats are empty but flat fields have data
+            const setOp: any = {};
+
             if ((currentStats.games || 0) === 0 && oldGames > 0) {
-                await User.findByIdAndUpdate(u._id, {
-                    $set: {
-                        'stats.games': oldGames,
-                        'stats.wins': oldWins,
-                        'stats.losses': oldLosses,
-                        'stats.draws': oldDraws,
-                        peakRating: Math.max(u.peakRating || 1200, u.rating || 1200),
-                    }
-                });
-                migrated++;
+                setOp['stats.games'] = oldGames;
+                setOp['stats.wins'] = oldWins;
+                setOp['stats.losses'] = oldLosses;
+                setOp['stats.draws'] = oldDraws;
+                setOp['peakRating'] = Math.max(u.peakRating || 1200, u.rating || 1200);
             }
 
-            // Fix peakRating if current rating is higher
             if ((u.rating || 1200) > (u.peakRating || 1200)) {
-                await User.findByIdAndUpdate(u._id, {
-                    $set: { peakRating: u.rating }
-                });
-                migrated++;
+                setOp['peakRating'] = u.rating;
+            }
+
+            if (Object.keys(setOp).length > 0) {
+                ops.push({ updateOne: { filter: { _id: u._id }, update: { $set: setOp } } });
             }
         }
 
-        return { success: true, migrated };
+        // Single bulk write — atomic batch of independent updates
+        if (ops.length > 0) {
+            await User.bulkWrite(ops);
+        }
+
+        return { success: true, migrated: ops.length };
     })
 
     // --- FRIENDS ENDPOINTS ---
@@ -369,23 +400,21 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
 
         const userId = new mongoose.Types.ObjectId(user.id);
 
-        // Accepted friendships — could be either requester or recipient
-        const accepted = await Friendship.find({
-            $or: [{ requester: userId }, { recipient: userId }],
-            status: 'accepted'
-        }).lean();
-
-        // Pending requests where I am the recipient
-        const incoming = await Friendship.find({
-            recipient: userId,
-            status: 'pending'
-        }).lean();
-
-        // Pending requests I sent
-        const outgoing = await Friendship.find({
-            requester: userId,
-            status: 'pending'
-        }).lean();
+        // Run the three queries in parallel — they're independent
+        const [accepted, incoming, outgoing] = await Promise.all([
+            Friendship.find({
+                $or: [{ requester: userId }, { recipient: userId }],
+                status: 'accepted'
+            }).lean(),
+            Friendship.find({
+                recipient: userId,
+                status: 'pending'
+            }).lean(),
+            Friendship.find({
+                requester: userId,
+                status: 'pending'
+            }).lean(),
+        ]);
 
         // Helper: fetch users for a list of IDs
         const fetchUsers = async (ids: any[]) => {
@@ -554,7 +583,7 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
                 set.status = 502;
                 return { error: 'Puzzle service unavailable' };
             }
-            const data = await response.json();
+            const data = ensurePuzzleFen(await response.json());
             return { success: true, data };
         } catch (e: any) {
             set.status = 500;
@@ -565,8 +594,6 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
     // GET /api/puzzles/random - Random puzzle, optionally near user's puzzle rating
     .get('/puzzles/random', async ({ headers, query, set }) => {
         try {
-            // Lichess random puzzle endpoint (public, no auth needed)
-            // Supported parameters: angle (theme), difficulty (easy/normal/hard)
             const difficulty = query.difficulty || 'normal';
             const url = `https://lichess.org/api/puzzle/next?difficulty=${difficulty}`;
 
@@ -575,7 +602,7 @@ export const apiRoutes = new Elysia({ prefix: '/api' })
                 set.status = 502;
                 return { error: 'Puzzle service unavailable' };
             }
-            const data = await response.json();
+            const data = ensurePuzzleFen(await response.json());
             return { success: true, data };
         } catch (e: any) {
             set.status = 500;

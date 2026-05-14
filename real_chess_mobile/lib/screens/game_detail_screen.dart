@@ -79,24 +79,39 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
 
   void _sharePgn() async {
     final pgn = _game?['pgn'] as String?;
-    if (pgn == null || pgn.isEmpty) {
-      // Build PGN from moves if backend didn't save it
-      final moves = (_game?['moves'] as List?)?.cast<String>() ?? [];
-      if (moves.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No moves to share')),
-        );
-        return;
-      }
+    final hasPgn = pgn != null && pgn.isNotEmpty;
+    final hasSans = _sans.isNotEmpty;
+
+    if (!hasPgn && !hasSans) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No moves to share')),
+      );
+      return;
     }
 
     final whiteName = _game?['whiteName'] ?? 'White';
     final blackName = _game?['blackName'] ?? 'Black';
     final result = _game?['result'];
     final winner = result?['winner'];
-    final resultStr = winner == 'w' ? '1-0' : winner == 'b' ? '0-1' : '1/2-1/2';
+    // PGN result codes: 1-0 white win, 0-1 black win, 1/2-1/2 draw, * unknown/ongoing
+    final String resultStr;
+    if (winner == 'w') {
+      resultStr = '1-0';
+    } else if (winner == 'b') {
+      resultStr = '0-1';
+    } else if (winner == 'draw') {
+      resultStr = '1/2-1/2';
+    } else {
+      resultStr = '*';
+    }
 
-    // Build PGN with headers
+    final body = hasPgn
+        ? pgn
+        : _sans.asMap().entries.map((e) {
+            final moveNum = (e.key ~/ 2) + 1;
+            return e.key % 2 == 0 ? '$moveNum. ${e.value}' : e.value;
+          }).join(' ');
+
     final pgnText = '''[Event "Chessing Online Game"]
 [Site "Chessing"]
 [Date "${DateTime.now().toIso8601String().split('T')[0]}"]
@@ -104,15 +119,11 @@ class _GameDetailScreenState extends State<GameDetailScreen> {
 [Black "$blackName"]
 [Result "$resultStr"]
 
-${pgn ?? _sans.asMap().entries.map((e) {
-      final moveNum = (e.key ~/ 2) + 1;
-      return e.key % 2 == 0 ? '$moveNum. ${e.value}' : e.value;
-    }).join(' ')} $resultStr''';
+$body $resultStr''';
 
     try {
       await Share.share(pgnText, subject: 'Chess Game ${widget.gameId}');
     } catch (_) {
-      // Fallback: copy to clipboard
       await Clipboard.setData(ClipboardData(text: pgnText));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

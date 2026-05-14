@@ -7,7 +7,7 @@ const modelMap: { [key: string]: mongoose.Model<any> } = {
     Games: Game,
     Users: User
 };
-
+ 
 // Dangerous MongoDB operators that could allow code execution or data exfiltration
 const DANGEROUS_OPERATORS = new Set([
     '$where', '$function', '$accumulator', '$expr',

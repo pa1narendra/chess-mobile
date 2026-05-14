@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../utils/config.dart';
+import '../services/server_discovery_service.dart';
 import '../main.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -132,7 +133,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
   Future<void> _showConfigDialog() async {
     final ipController = TextEditingController(text: Config.serverIp);
 
-    try {
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -191,15 +191,13 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         ],
       ),
     );
-    } finally {
-      ipController.dispose();
-    }
+    // Delay disposal so the dialog close animation finishes before the controller is destroyed
+    Future.delayed(const Duration(milliseconds: 300), () => ipController.dispose());
   }
 
   Future<void> _showConnectionErrorDialog() async {
     final ipController = TextEditingController(text: Config.serverIp);
 
-    try {
     await showDialog(
       context: context,
       barrierDismissible: false,
@@ -218,9 +216,9 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: AppColors.roseError.withOpacity(0.1),
+                color: AppColors.roseError.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.roseError.withOpacity(0.3)),
+                border: Border.all(color: AppColors.roseError.withValues(alpha: 0.3)),
               ),
               child: Text(
                 "Could not connect to the server. If using a physical device, enter your computer's local IP address.",
@@ -253,6 +251,41 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
             onPressed: () => Navigator.pop(ctx),
             child: const Text("Cancel"),
           ),
+          TextButton.icon(
+            onPressed: () async {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Row(children: [
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                    SizedBox(width: 12),
+                    Text("Scanning network..."),
+                  ]),
+                  duration: Duration(seconds: 5),
+                ),
+              );
+              final found = await ServerDiscoveryService.discover();
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              if (found != null) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text("Found server at $found"),
+                    backgroundColor: AppColors.emeraldGreen,
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("Could not auto-detect server. Enter IP manually."),
+                    backgroundColor: AppColors.amberWarning,
+                  ),
+                );
+              }
+            },
+            icon: const Icon(Icons.search_rounded, color: AppColors.electricBlue),
+            label: const Text("Auto-detect", style: TextStyle(color: AppColors.electricBlue)),
+          ),
           ElevatedButton(
             onPressed: () async {
               if (ipController.text.isNotEmpty) {
@@ -279,9 +312,8 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         ],
       ),
     );
-    } finally {
-      ipController.dispose();
-    }
+    // Delay disposal so the dialog close animation finishes before the controller is destroyed
+    Future.delayed(const Duration(milliseconds: 300), () => ipController.dispose());
   }
 
   @override
@@ -344,9 +376,9 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: AppColors.tealAccent.withOpacity(0.1),
+            color: AppColors.tealAccent.withValues(alpha: 0.1),
             shape: BoxShape.circle,
-            border: Border.all(color: AppColors.tealAccent.withOpacity(0.3), width: 2),
+            border: Border.all(color: AppColors.tealAccent.withValues(alpha: 0.3), width: 2),
           ),
           child: const Icon(
             Icons.grid_view_rounded,
@@ -382,7 +414,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
         border: Border.all(color: AppColors.borderColor),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: Colors.black.withValues(alpha: 0.2),
             blurRadius: 20,
             offset: const Offset(0, 10),
           ),
@@ -472,7 +504,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
               onPressed: _isLoading ? null : _submit,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.tealAccent,
-                disabledBackgroundColor: AppColors.tealAccent.withOpacity(0.5),
+                disabledBackgroundColor: AppColors.tealAccent.withValues(alpha: 0.5),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),

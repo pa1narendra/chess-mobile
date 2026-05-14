@@ -8,6 +8,7 @@ import 'providers/auth_provider.dart';
 import 'providers/game_provider.dart';
 
 import 'utils/config.dart' as app_config;
+import 'services/server_discovery_service.dart';
 
 // App Theme Colors
 class AppColors {
@@ -43,6 +44,10 @@ void main() async {
   ));
 
   await app_config.Config.load();
+
+  // Discover backend IP in the background — doesn't block app launch.
+  // If the cached IP works, this completes in <1s. If it has to scan, ~2s on a /24 subnet.
+  ServerDiscoveryService.discover();
 
   runApp(
     MultiProvider(
