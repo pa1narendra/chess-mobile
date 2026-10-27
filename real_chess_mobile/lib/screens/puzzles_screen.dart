@@ -1,5 +1,7 @@
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:chess/chess.dart' as chess_lib;
 import 'package:flutter_chess_board/flutter_chess_board.dart' hide Color;
 import '../api/api_service.dart';
@@ -32,11 +34,67 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
   bool _puzzleComplete = false;
   bool _showedSolution = false;
 
+  // Hint system (chess.com model — 2 stages): 0=none, 1=piece highlighted, 2=move revealed
+  int _hintLevel = 0;
+  String? _hintText;
+
+  // Square highlight overlays passed to the board (square -> color)
+  Map<String, ui.Color> _highlights = {};
+
+  // Track puzzles already seen so we don't repeat them — scoped per user
+  final Set<String> _seenPuzzleIds = {};
+  String _userId = 'guest';
+
+  // Per-user SharedPreferences keys
+  String get _seenIdsKey => 'puzzle_seen_ids_$_userId';
+  String get _dailyDoneKey => 'daily_puzzle_done_date_$_userId';
+
   @override
   void initState() {
     super.initState();
+    _init();
+  }
+
+  String _todayKey() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _init() async {
     _loadProgress();
-    _loadPuzzle(daily: true);
+
+    // Resolve the current user so puzzle progress is tracked per-account.
+    // A different user on the same device gets their own daily puzzle.
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    _userId = (auth.user?['_id'] ?? auth.user?['id'] ?? 'guest').toString();
+
+    final prefs = await SharedPreferences.getInstance();
+    _seenPuzzleIds.addAll(prefs.getStringList(_seenIdsKey) ?? []);
+
+    // If THIS user already finished today's daily, open a fresh random puzzle
+    final dailyAlreadyDone = prefs.getString(_dailyDoneKey) == _todayKey();
+    _loadPuzzle(daily: !dailyAlreadyDone);
+  }
+
+  /// Persists that the current puzzle was completed (solved or solution shown)
+  /// so it isn't served again. Scoped to the current user.
+  Future<void> _markPuzzleCompleted() async {
+    final id = _puzzleData?['puzzle']?['id'] as String?;
+    final prefs = await SharedPreferences.getInstance();
+
+    if (id != null) {
+      _seenPuzzleIds.add(id);
+      // Cap the stored history at 200 most-recent IDs
+      var list = _seenPuzzleIds.toList();
+      if (list.length > 200) list = list.sublist(list.length - 200);
+      _seenPuzzleIds
+        ..clear()
+        ..addAll(list);
+      await prefs.setStringList(_seenIdsKey, list);
+    }
+    if (_isDaily) {
+      await prefs.setString(_dailyDoneKey, _todayKey());
+    }
   }
 
   Future<void> _loadProgress() async {
@@ -57,16 +115,30 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
       _puzzleComplete = false;
       _showedSolution = false;
       _solutionIndex = 0;
-      _lastMoveWasWrong = false;
       _recordedFailureForThisPuzzle = false;
+      _processingMove = false;
+      _hintLevel = 0;
+      _hintText = null;
+      _highlights = {};
       _status = 'Loading...';
     });
 
     try {
-      final result = daily
-          ? await ApiService.getDailyPuzzle()
-          : await ApiService.getRandomPuzzle();
-      final data = result['data'] as Map<String, dynamic>;
+      Map<String, dynamic> data;
+      // For random puzzles, retry a few times to avoid serving an already-seen puzzle
+      int attempt = 0;
+      while (true) {
+        final result = daily
+            ? await ApiService.getDailyPuzzle()
+            : await ApiService.getRandomPuzzle();
+        data = result['data'] as Map<String, dynamic>;
+        final id = data['puzzle']?['id'] as String?;
+        attempt++;
+        if (daily || id == null || !_seenPuzzleIds.contains(id) || attempt >= 4) {
+          break;
+        }
+        debugPrint('[Puzzle] Skipping already-seen puzzle $id, retrying...');
+      }
 
       // Lichess provides the puzzle FEN directly — use it instead of replaying PGN
       // (some PGNs have ambiguous SAN that the Dart chess package can't parse)
@@ -111,88 +183,153 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
     }
   }
 
-  // Tracks whether the user's CURRENT pending move was correct so we can show feedback
-  // and let them undo without instantly punishing them.
-  bool _lastMoveWasWrong = false;
   bool _recordedFailureForThisPuzzle = false;
+  bool _processingMove = false; // guards against re-entrancy during snap-back
+
+  // Chess.com-style highlight colors
+  static const _hintColor = ui.Color.fromARGB(130, 255, 196, 0);    // translucent amber
+  static const _correctColor = ui.Color.fromARGB(120, 76, 175, 80); // translucent green
+  static const _wrongColor = ui.Color.fromARGB(140, 244, 67, 54);   // translucent red
 
   void _onMove() {
-    if (_puzzleComplete || _chess == null) return;
+    if (_puzzleComplete || _chess == null || _processingMove) return;
 
     final controllerGame = _boardController.game;
     final history = controllerGame.history;
     if (history.isEmpty) return;
 
     final lastMove = history.last.move;
-    final userMove = '${lastMove.fromAlgebraic}${lastMove.toAlgebraic}${lastMove.promotion?.name ?? ''}';
-
+    final from = lastMove.fromAlgebraic;
+    final to = lastMove.toAlgebraic;
+    final userMove = '$from$to${lastMove.promotion?.name ?? ''}';
     final expected = _solution[_solutionIndex];
 
     debugPrint('[Puzzle] User played: $userMove, expected: $expected, '
-        'solutionIndex: $_solutionIndex/${_solution.length}');
+        'index: $_solutionIndex/${_solution.length}');
 
     final stripPromo = (String m) => m.length > 4 ? m.substring(0, 4) : m;
-    final isCorrect = userMove == expected ||
-        stripPromo(userMove) == stripPromo(expected);
+    final isCorrect = userMove == expected || stripPromo(userMove) == stripPromo(expected);
 
     if (isCorrect) {
       _solutionIndex++;
-      _lastMoveWasWrong = false;
+      _hintText = null;
+      _hintLevel = 0;
+
+      // Green flash on the move just played
+      setState(() {
+        _highlights = {from: _correctColor, to: _correctColor};
+        _status = 'Best move!';
+      });
 
       if (_solutionIndex >= _solution.length) {
         setState(() {
           _puzzleComplete = true;
-          _status = 'Solved!';
+          _status = 'Puzzle solved!';
         });
-        // Only record as success if user never showed the solution AND never recorded a failure
+        _markPuzzleCompleted();
         if (!_showedSolution && !_recordedFailureForThisPuzzle) {
           _recordResult(true);
         }
         return;
       }
 
-      setState(() => _status = 'Correct!');
-
-      // Play opponent's response after a short delay
-      Future.delayed(const Duration(milliseconds: 500), () {
+      // Auto-play opponent's reply after a short delay
+      Future.delayed(const Duration(milliseconds: 450), () {
         if (!mounted || _chess == null || _solutionIndex >= _solution.length) return;
         final oppMove = _solution[_solutionIndex];
-        final from = oppMove.substring(0, 2);
-        final to = oppMove.substring(2, 4);
-        final promotion = oppMove.length > 4 ? oppMove[4] : null;
+        final of = oppMove.substring(0, 2);
+        final ot = oppMove.substring(2, 4);
+        final op = oppMove.length > 4 ? oppMove[4] : null;
 
-        if (promotion != null) {
-          _boardController.makeMoveWithPromotion(from: from, to: to, pieceToPromoteTo: promotion);
+        if (op != null) {
+          _boardController.makeMoveWithPromotion(from: of, to: ot, pieceToPromoteTo: op);
         } else {
-          _boardController.makeMove(from: from, to: to);
+          _boardController.makeMove(from: of, to: ot);
         }
 
         setState(() {
           _solutionIndex++;
+          _highlights = {of: _correctColor, ot: _correctColor};
           _status = 'Your turn';
         });
       });
     } else {
-      // Wrong move — DO NOT undo. Let them keep exploring, show soft feedback.
+      // WRONG — chess.com behavior: briefly show the move, flash red, then snap back
+      _processingMove = true;
       setState(() {
-        _status = "Not the puzzle's move — Undo to try again";
-        _lastMoveWasWrong = true;
+        _highlights = {to: _wrongColor};
+        _status = 'Incorrect — try again';
       });
-      // Record failure once per puzzle so rating isn't double-penalized
+
       if (!_recordedFailureForThisPuzzle) {
         _recordedFailureForThisPuzzle = true;
         _recordResult(false);
       }
+
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (!mounted) return;
+        _resetToCorrectPosition();
+        setState(() {
+          _highlights = {};
+          _processingMove = false;
+        });
+      });
     }
   }
 
-  void _undoLastMove() {
-    if (_chess == null) return;
-    _boardController.undoMove();
+  /// Rebuilds the board to the correct state: puzzle start FEN + all correctly
+  /// played solution moves so far. Reliable across captures/promotions.
+  void _resetToCorrectPosition() {
+    final puzzleFen = _puzzleData?['puzzle']?['fen'] as String?;
+    if (puzzleFen == null) return;
+
+    _boardController.loadFen(puzzleFen);
+    for (int i = 0; i < _solutionIndex; i++) {
+      final move = _solution[i];
+      final f = move.substring(0, 2);
+      final t = move.substring(2, 4);
+      final p = move.length > 4 ? move[4] : null;
+      if (p != null) {
+        _boardController.makeMoveWithPromotion(from: f, to: t, pieceToPromoteTo: p);
+      } else {
+        _boardController.makeMove(from: f, to: t);
+      }
+    }
+  }
+
+  /// 2-stage hint (chess.com model):
+  ///  - Stage 1: highlight the piece to move (from-square, amber)
+  ///  - Stage 2: highlight the full move (from + to, amber)
+  void _requestHint() {
+    if (_solutionIndex >= _solution.length) return;
+    final move = _solution[_solutionIndex];
+    final from = move.substring(0, 2);
+    final to = move.substring(2, 4);
+
     setState(() {
-      _lastMoveWasWrong = false;
-      _status = 'Your turn';
+      if (_hintLevel < 2) _hintLevel++;
+      if (_hintLevel == 1) {
+        final piece = _chess?.get(from);
+        final pieceName = _pieceName(piece?.type.toString());
+        _hintText = 'Move your $pieceName';
+        _highlights = {from: _hintColor};
+      } else {
+        _hintText = '${from.toUpperCase()} → ${to.toUpperCase()}';
+        _highlights = {from: _hintColor, to: _hintColor};
+      }
     });
+  }
+
+  String _pieceName(String? type) {
+    switch (type?.toLowerCase()) {
+      case 'p': return 'pawn';
+      case 'n': return 'knight';
+      case 'b': return 'bishop';
+      case 'r': return 'rook';
+      case 'q': return 'queen';
+      case 'k': return 'king';
+      default: return 'piece';
+    }
   }
 
   Future<void> _showSolution() async {
@@ -202,7 +339,7 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
 
     setState(() {
       _showedSolution = true;
-      _lastMoveWasWrong = false;
+      _highlights = {};
       _status = 'Showing solution...';
     });
     if (!_recordedFailureForThisPuzzle) {
@@ -226,14 +363,24 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
       } else {
         _boardController.makeMove(from: from, to: to);
       }
+      // Highlight each solution move as it's played (user moves green, opponent amber)
+      final isUserMove = i % 2 == 0;
+      setState(() {
+        _highlights = {
+          from: isUserMove ? _correctColor : _hintColor,
+          to: isUserMove ? _correctColor : _hintColor,
+        };
+      });
       await Future.delayed(const Duration(milliseconds: 800));
     }
 
     if (mounted) {
       setState(() {
         _puzzleComplete = true;
+        _highlights = {};
         _status = 'Solution shown';
       });
+      _markPuzzleCompleted();
     }
   }
 
@@ -311,9 +458,9 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
     final themes = (puzzle?['themes'] as List?)?.cast<String>() ?? [];
 
     Color statusColor = AppColors.textSecondary;
-    if (_status == 'Correct!') statusColor = AppColors.emeraldGreen;
-    if (_status == 'Solved!') statusColor = AppColors.tealAccent;
-    if (_lastMoveWasWrong) statusColor = AppColors.amberWarning;
+    if (_status == 'Best move!' || _status == 'Puzzle solved!') statusColor = AppColors.emeraldGreen;
+    if (_status.startsWith('Incorrect')) statusColor = AppColors.roseError;
+    if (_status == 'Showing solution...' || _status == 'Solution shown') statusColor = AppColors.amberWarning;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -347,34 +494,39 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
           ),
         ),
 
-        // Status banner — softer styling, with Undo button when wrong move was made
+        // Status banner
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           color: statusColor.withValues(alpha: 0.1),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  _puzzleComplete
-                      ? 'Puzzle Solved!'
-                      : '${_userColor == PlayerColor.white ? "White" : "Black"} to play — $_status',
-                  style: TextStyle(color: statusColor, fontSize: 13, fontWeight: FontWeight.w600),
-                  textAlign: _lastMoveWasWrong ? TextAlign.start : TextAlign.center,
-                ),
-              ),
-              if (_lastMoveWasWrong)
-                TextButton.icon(
-                  onPressed: _undoLastMove,
-                  icon: const Icon(Icons.undo_rounded, size: 16, color: AppColors.tealAccent),
-                  label: const Text('Undo', style: TextStyle(color: AppColors.tealAccent, fontSize: 13)),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    minimumSize: const Size(0, 32),
-                  ),
-                ),
-            ],
+          child: Text(
+            _puzzleComplete
+                ? _status
+                : '${_userColor == PlayerColor.white ? "White" : "Black"} to play — $_status',
+            style: TextStyle(color: statusColor, fontSize: 14, fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
           ),
         ),
+
+        // Hint banner
+        if (_hintText != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            color: AppColors.electricBlue.withValues(alpha: 0.12),
+            child: Row(
+              children: [
+                const Icon(Icons.lightbulb_outline_rounded, color: AppColors.electricBlue, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _hintText!,
+                    style: const TextStyle(color: AppColors.electricBlue, fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+          ),
 
         // Board — constrained so it doesn't push other elements off-screen
         Center(
@@ -383,9 +535,10 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
             height: maxBoardSize,
             child: CustomChessBoard(
               controller: _boardController,
-              enableUserMoves: !_puzzleComplete,
+              enableUserMoves: !_puzzleComplete && !_processingMove,
               boardOrientation: _userColor,
               onMove: _onMove,
+              highlightSquares: _highlights,
             ),
           ),
         ),
@@ -413,34 +566,60 @@ class _PuzzlesScreenState extends State<PuzzlesScreen> {
 
         // Actions
         Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: OutlinedButton.icon(
+              // Hint + Solution row (chess.com model: hint is 2-stage, solution always available)
+              if (!_puzzleComplete && !_showedSolution)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _hintLevel >= 2 ? null : _requestHint,
+                          icon: Icon(Icons.lightbulb_outline_rounded,
+                              color: _hintLevel >= 2 ? AppColors.textMuted : AppColors.electricBlue),
+                          label: Text(
+                            _hintLevel == 0 ? 'Hint' : _hintLevel == 1 ? 'Reveal move' : 'Move shown',
+                            style: TextStyle(
+                                color: _hintLevel >= 2 ? AppColors.textMuted : AppColors.electricBlue),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: AppColors.electricBlue.withValues(alpha: 0.4)),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _showSolution,
+                          icon: const Icon(Icons.visibility_outlined, color: AppColors.amberWarning),
+                          label: const Text('Solution', style: TextStyle(color: AppColors.amberWarning)),
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: AppColors.amberWarning.withValues(alpha: 0.5)),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
                   onPressed: () => _loadPuzzle(daily: false),
-                  icon: const Icon(Icons.shuffle_rounded, color: AppColors.textPrimary),
-                  label: const Text('New Puzzle', style: TextStyle(color: AppColors.textPrimary)),
-                  style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: AppColors.borderColor),
+                  icon: const Icon(Icons.shuffle_rounded),
+                  label: const Text('New Puzzle'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.tealAccent,
+                    foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),
               ),
-              if (!_puzzleComplete && !_showedSolution) ...[
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _showSolution,
-                    icon: const Icon(Icons.visibility_outlined, color: AppColors.amberWarning),
-                    label: const Text('Show Solution', style: TextStyle(color: AppColors.amberWarning)),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: AppColors.amberWarning.withValues(alpha: 0.5)),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                  ),
-                ),
-              ],
             ],
           ),
         ),

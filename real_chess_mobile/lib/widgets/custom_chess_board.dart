@@ -54,6 +54,9 @@ class CustomChessBoard extends StatefulWidget {
   final PlayerColor boardOrientation;
   final VoidCallback? onMove;
   final ChessBoardTheme theme;
+  /// Map of square name (e.g. "e4") -> overlay color. Used for hints
+  /// (yellow), correct (green), and wrong (red) feedback.
+  final Map<String, ui.Color> highlightSquares;
 
   const CustomChessBoard({
     super.key,
@@ -62,6 +65,7 @@ class CustomChessBoard extends StatefulWidget {
     this.boardOrientation = PlayerColor.white,
     this.onMove,
     this.theme = ChessBoardTheme.green,
+    this.highlightSquares = const {},
   });
 
   @override
@@ -114,12 +118,24 @@ class _CustomChessBoardState extends State<CustomChessBoard> {
             ? '${8 - row}'
             : '${row + 1}';
 
+        // Compute the actual square name to check for a highlight overlay
+        final sqRank = widget.boardOrientation == PlayerColor.black
+            ? '${row + 1}'
+            : '${(7 - row) + 1}';
+        final sqFile = widget.boardOrientation == PlayerColor.white
+            ? _files[col]
+            : _files[7 - col];
+        final squareName = '$sqFile$sqRank';
+        final highlight = widget.highlightSquares[squareName];
+
         return Container(
           width: squareSize,
           height: squareSize,
           color: isLight ? widget.theme.lightSquare : widget.theme.darkSquare,
           child: Stack(
             children: [
+              if (highlight != null)
+                Positioned.fill(child: Container(color: highlight)),
               if (isLeftCol)
                 Positioned(
                   top: 2,
